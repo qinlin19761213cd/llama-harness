@@ -13,6 +13,8 @@ public sealed class StatusPanelView : UserControl
 
     private Label _lblStatus = null!;       // 服务阶段卡片：调度器状态文本（运行中 · N个在途任务…）
     private FlowLayoutPanel _inFlightPanel = null!; // 服务阶段卡片内：在途任务明细列表（v2.18，每个任务一行）
+    /// <summary>详情正常状态统一色（v2.19）：亮绿 Color.Lime，对齐 Restore 命中率卡片（原 C_TextFg/C_Primary/C_Aux 等统一收敛）。</summary>
+    private static readonly Color C_DetailOk = Color.Lime;
     private Label _lblModuleState = null!;  // 模块状态（网关 运行中绿 / 已停止红）
     private Label _lblResSummary = null!;   // 系统资源单行摘要（CPU/内存/显存）
     private Label _lblTokenSummary = null!; // Token 统计摘要（请求数/速度/命中率）
@@ -83,10 +85,11 @@ public sealed class StatusPanelView : UserControl
             var lblTitle = new Label
             {
                 Text = title,
+                BackColor = Color.Black, // 黑色标题栏条（v2.19 层次感）
                 Dock = DockStyle.Top,
                 Height = 26,
-                ForeColor = UiTheme.C_Title,
-                Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
+                ForeColor = UiTheme.C_Primary,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,
             };
             content.Dock = DockStyle.Fill;
@@ -99,8 +102,8 @@ public sealed class StatusPanelView : UserControl
         _lblStatus = new Label
         {
             Text = "空闲",
-            Font = new Font("Microsoft YaHei UI", 9F),
-            ForeColor = UiTheme.C_Aux,
+            Font = new Font("Consolas", 9F),
+            ForeColor = C_DetailOk,
         };
         _lblModuleState = new Label
         {
@@ -114,31 +117,31 @@ public sealed class StatusPanelView : UserControl
         {
             Text = "CPU: —\n内存: —\n显存: —",
             Font = new Font("Consolas", 9F),
-            ForeColor = UiTheme.C_TextFg,
+            ForeColor = C_DetailOk,
         };
         _lblTokenSummary = new Label
         {
             Text = "请求: 0\n输入: —\n输出: —",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_Primary,
+            Font = new Font("Consolas", 9F),
+            ForeColor = C_DetailOk,
         };
         _lblSlotSummary = new Label
         {
             Text = "槽位: —",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_TextFg,
+            Font = new Font("Consolas", 9F),
+            ForeColor = C_DetailOk,
         };
         _lblRestoreHit = new Label
         {
             Text = "Restore: 未启用",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_TextFg,
+            Font = new Font("Consolas", 9F),
+            ForeColor = C_DetailOk,
         };
         _lblThinking = new Label
         {
             Text = "思考: 极速",
-            Font = new Font("Microsoft YaHei UI", 11F),
-            ForeColor = Color.Silver,
+            Font = new Font("Consolas", 9F),
+            ForeColor = C_DetailOk,
         };
 
         // 服务阶段卡片（v2.18 多行化）：标题 + 状态文本 + 在途任务明细列表（与 MakeCard 单 Label 卡片区分）
@@ -152,10 +155,11 @@ public sealed class StatusPanelView : UserControl
         var statusTitle = new Label
         {
             Text = "服务阶段",
+            BackColor = Color.Black, // 黑色标题栏条（v2.19 层次感）
             Dock = DockStyle.Top,
             Height = 26,
-            ForeColor = UiTheme.C_Title,
-            Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
+            ForeColor = UiTheme.C_Primary,
+            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
         };
         _inFlightPanel = new FlowLayoutPanel
@@ -225,7 +229,7 @@ public sealed class StatusPanelView : UserControl
         };
         _lblStatus.ForeColor = phase switch
         {
-            SmartScheduler.Phase.Running => Color.Green,
+            SmartScheduler.Phase.Running => C_DetailOk,
             SmartScheduler.Phase.Waking => Color.DarkOrange,
             SmartScheduler.Phase.Warming => Color.DarkOrange,
             SmartScheduler.Phase.Sleeping => Color.DarkOrange,
@@ -252,8 +256,8 @@ public sealed class StatusPanelView : UserControl
             var lbl = new Label
             {
                 AutoSize = true,
-                Font = new Font("Consolas", 8F),
-                ForeColor = UiTheme.C_Aux,
+                Font = new Font("Consolas", 9F),
+                ForeColor = C_DetailOk,
                 Margin = new Padding(0, 1, 0, 1),
                 Text = $"• {(t.App ?? "未知")} · {t.Method} {t.Path}",
             };
@@ -267,10 +271,10 @@ public sealed class StatusPanelView : UserControl
         _lblThinking.Text = $"思考: {ThinkingMode.LabelOf(level)}";
         _lblThinking.ForeColor = level switch
         {
-            SmartScheduler.ThinkingLevel.Off => Color.Silver,
-            SmartScheduler.ThinkingLevel.Low => Color.LightGreen,
-            SmartScheduler.ThinkingLevel.Medium => Color.DodgerBlue,
-            _ => Color.LightBlue, // XHigh
+            SmartScheduler.ThinkingLevel.Off => Color.Silver, // 关闭=未激活灰；开启档位统一亮绿（v2.19）
+            SmartScheduler.ThinkingLevel.Low => C_DetailOk,
+            SmartScheduler.ThinkingLevel.Medium => C_DetailOk,
+            _ => C_DetailOk, // XHigh 统一亮绿
         };
     }
 
@@ -285,18 +289,18 @@ public sealed class StatusPanelView : UserControl
         if (stats == null)
         {
             _lblRestoreHit.Text = "Restore: 未启用";
-            _lblRestoreHit.ForeColor = UiTheme.C_TextFg;
+            _lblRestoreHit.ForeColor = C_DetailOk;
             return;
         }
         var s = stats.Snapshot();
         if (s.TotalAttempts == 0)
         {
             _lblRestoreHit.Text = "Restore: 等待首次判定…";
-            _lblRestoreHit.ForeColor = UiTheme.C_TextFg;
+            _lblRestoreHit.ForeColor = C_DetailOk;
             return;
         }
         double pct = s.HitRate * 100;
-        _lblRestoreHit.ForeColor = pct < 50 ? Color.Red : pct < 80 ? Color.Gold : Color.Lime;
+        _lblRestoreHit.ForeColor = pct < 50 ? Color.Red : pct < 80 ? Color.Gold : C_DetailOk;
         string last = s.Last != null
             ? $"\n最近: {s.Last.Key} {(s.Last.Hit ? "HIT" : "MISS")} Δ{s.Last.PromptEvalTokens}tok (saved {s.Last.SavedN})"
             : "";
