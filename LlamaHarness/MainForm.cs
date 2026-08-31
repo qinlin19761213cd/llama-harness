@@ -20,6 +20,7 @@ public partial class MainForm : Form
     private readonly MonitorPanelView _monitor;
     private readonly PerfSampler _perfSampler;
     private readonly PerfMonitorView _perfMonitor;
+    private string? _perfSessionId; // v2.22 可观测：当前 perf 会话 sid（进程级 UUID，perf.log 会话边界锚点）
     private readonly MainFormPresenter _presenter;
 
 
@@ -73,6 +74,9 @@ public partial class MainForm : Form
         // 系统资源改为手动触发（无轮询）：点击「手动刷新」按钮才采集一次
 
         PerfLog.Start(); // 性能日志写入器（独立直写 perf.log，5MB×3 轮切）
+        _perfSessionId = PerfLog.StartSession("2.22"); // v2.22 会话边界（跨会话/跨版本对比锚点）
+        _scheduler.KvEvents.Completed += e => PerfLog.LogEvent("kv", e);   // v2.22 kv 事件行
+        _scheduler.SchedEvents.Completed += e => PerfLog.LogEvent("sched", e); // v2.22 sched 事件行
 
         // 性能采样器：常驻后台（1s 轻量 + 5s 慢指标），随应用生命周期启停（v2.21）
         _perfSampler.Start();
@@ -179,6 +183,7 @@ public partial class MainForm : Form
             AppendLog($"警告：配置保存失败：{err}");
         _perfSampler.Dispose(); // 停止后台采样（Step2 接线）
         _perfMonitor.Shutdown(); // 停止监控页定时器与事件订阅（v2.21）
+        if (_perfSessionId != null) { PerfLog.EndSession(_perfSessionId); _perfSessionId = null; } // v2.22 会话结束边界
         PerfLog.Stop(); // 关闭性能日志写入器（Flush 后释放文件）
         _scheduler.Dispose();
         LogFile.Shutdown(); // E-6：Flush + 关闭常驻日志写入器（防缓冲丢失）
@@ -192,6 +197,7 @@ public partial class MainForm : Form
     {
         PerfLog.LogSystem(p);
         if (p.HasCpp) PerfLog.LogCpp(p); // cpp 字段非空才写（5s 节奏）
+        if (p.HasCumulative) PerfLog.LogCounts(p); // v2.22 count 行（累积型指标，5s 节奏）
     }
 
     private void OnPerfTiming(RequestTiming t) => PerfLog.LogTiming(t);

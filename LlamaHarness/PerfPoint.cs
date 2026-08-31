@@ -58,6 +58,9 @@ public readonly struct PerfPoint
     /// <summary>flush 平均耗时（ms）。</summary>
     public double? LogFlushCostMs { get; init; }
 
+    /// <summary>是否含累积型指标（调度驱逐/强占 或 日志管道丢弃/flush），决定是否写 count 行。</summary>
+    public bool HasCumulative => EvictCount != null || PreemptTrigger != null || LogDroppedLines != null || LogFlushCostMs != null;
+
     /// <summary>该点是否含系统层有效指标。</summary>
     public bool HasSystem => CpuPercent != null || MemUsedGb != null || VramUsedMb != null;
     /// <summary>该点是否含 llama.cpp 层有效指标。</summary>

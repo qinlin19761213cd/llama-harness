@@ -6,7 +6,8 @@ namespace LlamaHarness;
 /// 性能日志（v2.21）：独立常驻直写 logs/perf.log，机器可解析的统一格式，每行一条记录。
 /// 与主日志（LogPipeline）刻意分离——性能采样 1 行/秒且高频，不占用主有界队列（50k 四流共享单写线程）：
 /// 统一的是格式协议（Kind,ts,key=value,...），不是写入通道（方案②边界）。
-/// 三类记录：system（1s 系统指标）/ cpp（5s llama.cpp 指标）/ timing（请求级网关时延事件）。
+/// 记录类别：system（1s 系统指标）/ cpp（5s llama.cpp 指标）/ timing（请求级网关时延事件）/
+/// kv（KV save/restore 事件）/ sched（槽选择/唤醒事件）/ count（调度+日志管道累积快照，5s）/ session（会话边界 sid+版本）。
 /// 轮切：5MB × 3 份（perf.log → .1 → .2 依次后移，删除最旧）。线程安全（lock）、尽力而为（不抛出）。
 /// 格式化数值用 F1 保留一位小数，布尔用 1/0，缺失字段省略（分析端按 Key 存在性判断）。
 /// </summary>
@@ -75,6 +76,46 @@ public static class PerfLog
         sb.Append(",backend=").Append(t.BackendMs.ToString("F1"));
         sb.Append(",total=").Append(t.TotalMs.ToString("F1"));
         WriteLine("timing", sb);
+    }
+
+    /// <summary>记录一条 kv/sched 事件行：op + 单次耗时 + 关联 key。</summary>
+    public static void LogEvent(string kind, PerfEvent e)
+    {
+        var sb = new StringBuilder(96);
+        sb.Append(",op=").Append(Escape(e.Op));
+        sb.Append(",ms=").Append(e.DurationMs.ToString("F1"));
+        if (!string.IsNullOrEmpty(e.Key)) sb.Append(",key=").Append(Escape(e.Key));
+        WriteLine(kind, sb);
+    }
+
+    /// <summary>记录一条累积计数行（count，5s 节奏）：调度驱逐/强占 + 日志管道丢弃/flush 的绝对累积快照（分析端相邻差分为增量）。</summary>
+    public static void LogCounts(PerfPoint p)
+    {
+        var sb = new StringBuilder(96);
+        if (p.EvictCount is int ev) sb.Append(",evict=").Append(ev);
+        if (p.PreemptTrigger is int pre) sb.Append(",preempt=").Append(pre);
+        if (p.LogDroppedLines is long ld) sb.Append(",log_dropped=").Append(ld);
+        if (p.LogFlushCostMs is double lf) sb.Append(",log_flush=").Append(lf.ToString("F2"));
+        WriteLine("count", sb);
+    }
+
+    /// <summary>新会话边界：写 session 起始行，返回 sid（进程级会话 UUID，跨会话/跨版本对比锚点）。</summary>
+    public static string StartSession(string version)
+    {
+        var sid = Guid.NewGuid().ToString("N");
+        var sb = new StringBuilder(64);
+        sb.Append(",type=start").Append(",sid=").Append(sid).Append(",ver=").Append(Escape(version));
+        WriteLine("session", sb);
+        return sid;
+    }
+
+    /// <summary>会话结束边界：写 session 结束行（summary 为可选摘要负载）。</summary>
+    public static void EndSession(string sid, string? summary = null)
+    {
+        var sb = new StringBuilder(64);
+        sb.Append(",type=end").Append(",sid=").Append(Escape(sid));
+        if (!string.IsNullOrEmpty(summary)) sb.Append(",summary=").Append(Escape(summary));
+        WriteLine("session", sb);
     }
 
     /// <summary>停止：Flush + 关闭写入器（进程退出时调用）。幂等。</summary>

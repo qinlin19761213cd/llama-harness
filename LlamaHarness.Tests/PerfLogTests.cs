@@ -103,4 +103,47 @@ public class PerfLogTests
             PerfLog.Stop();
         }
     }
+
+    [Fact]
+    public void Log_V2Rows_SessionKvSchedCount_WritesParsableLines()
+    {
+        string path = AppPaths.PerfLog;
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+
+        PerfLog.Start();
+        try
+        {
+            // 会话边界（start/end）
+            string sid = PerfLog.StartSession("2.22");
+            PerfLog.EndSession(sid);
+
+            // kv 事件行
+            PerfLog.LogEvent("kv", new PerfEvent("kv", "save", 12.3, "sess-1"));
+            // sched 事件行
+            PerfLog.LogEvent("sched", new PerfEvent("sched", "slot_select", 0.7, "app_x"));
+            // count 累积快照行
+            PerfLog.LogCounts(new PerfPoint
+            {
+                Ts = DateTime.Now,
+                EvictCount = 3,
+                PreemptTrigger = 1,
+                LogDroppedLines = 7,
+                LogFlushCostMs = 2.5,
+            });
+
+            PerfLog.Stop();
+            var lines = File.ReadAllLines(path);
+            // 找各行（session 2 行 + kv + sched + count）
+            Assert.Contains(lines, l => l.StartsWith("session,") && l.Contains("type=start") && l.Contains("sid=" + sid) && l.Contains("ver=2.22"));
+            Assert.Contains(lines, l => l.StartsWith("session,") && l.Contains("type=end") && l.Contains("sid=" + sid));
+            Assert.Contains(lines, l => l.StartsWith("kv,") && l.Contains("op=save") && l.Contains("ms=12.3") && l.Contains("key=sess-1"));
+            Assert.Contains(lines, l => l.StartsWith("sched,") && l.Contains("op=slot_select") && l.Contains("ms=0.7") && l.Contains("key=app_x"));
+            Assert.Contains(lines, l => l.StartsWith("count,") && l.Contains("evict=3") && l.Contains("preempt=1") && l.Contains("log_dropped=7") && l.Contains("log_flush=2.50"));
+        }
+        finally
+        {
+            PerfLog.Stop();
+        }
+    }
+
 }
