@@ -38,6 +38,14 @@ public readonly struct PerfPoint
     /// <summary>在途请求数（含排队等待唤醒）。</summary>
     public int? Inflight { get; init; }
 
+    // —— KV 缓存累积型（RestoreStats 会话计数快照，1s；增量 = 相邻采样点差）——
+    /// <summary>KV 命中累计次数（HitByDelta）。</summary>
+    public int? KvHitDelta { get; init; }
+    /// <summary>非预期 miss 累计次数（前缀无变更却 miss）。</summary>
+    public int? KvFalseMiss { get; init; }
+    /// <summary>该会话最大 token 偏移量（KV 快照 token 数）。</summary>
+    public int? SavedN { get; init; }
+
     /// <summary>该点是否含系统层有效指标。</summary>
     public bool HasSystem => CpuPercent != null || MemUsedGb != null || VramUsedMb != null;
     /// <summary>该点是否含 llama.cpp 层有效指标。</summary>

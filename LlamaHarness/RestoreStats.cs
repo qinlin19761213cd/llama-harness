@@ -25,6 +25,7 @@ public sealed class RestoreStats
     private readonly Dictionary<string, KeyStats> _byKey = new(StringComparer.OrdinalIgnoreCase);
 
     private int _totalAttempts, _totalHits, _totalFalseMiss, _totalFalseHit;
+    private int _maxSavedN; // 会话最大 token 偏移（可观测 kv 累积型指标 saved_n 源）
     private AlertLevel _lastAlert = AlertLevel.None;
     private DateTime _lastSaveAt = DateTime.MinValue;
     private bool _dirty;
@@ -99,7 +100,10 @@ public sealed class RestoreStats
     public void RecordRequest(string key, int slot, bool wrapperHit, int savedN)
     {
         lock (_gate)
+        {
+            if (savedN > _maxSavedN) _maxSavedN = savedN;
             _pending.Enqueue(new Pending { Key = key, Slot = slot, WrapperHit = wrapperHit, SavedN = savedN, EnqueuedAt = DateTime.Now });
+        }
     }
 
     /// <summary>输出侧：收到 prompt eval 行时弹最旧条目并判定。无判定上下文（如非亲和 key 任务）返回 null。</summary>
@@ -170,6 +174,12 @@ public sealed class RestoreStats
                     kv.Value.PromptEvalCount > 0 ? (double)kv.Value.PromptEvalSum / kv.Value.PromptEvalCount : 0))
                 .ToList());
         }
+    }
+
+    /// <summary>轻量性能快照（可观测累积型指标源，v2.22）：命中数 / false_miss / 最大 savedN。开销远低于全量 Snapshot（无 ByKey 构建）。</summary>
+    public (int TotalHits, int TotalFalseMiss, int MaxSavedN) PerfSnapshot()
+    {
+        lock (_gate) return (_totalHits, _totalFalseMiss, _maxSavedN);
     }
 
     /// <summary>持久化（原子写：临时文件 + rename）。休眠/退出时显式调用；无新数据时跳过。AH-13：锁内只判定+快照，磁盘 IO 锁外执行（不再阻塞统计更新）。</summary>

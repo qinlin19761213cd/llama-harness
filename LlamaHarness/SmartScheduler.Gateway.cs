@@ -231,6 +231,7 @@ public partial class SmartScheduler
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 await saveTask;
                 EmitSlot($"KV Cache 保存：{evicted} → slot{evictedSlot}（{sw.Elapsed.TotalSeconds:F1}s）");
+                KvEvents.Record(new PerfEvent("kv", "save", sw.Elapsed.TotalMilliseconds, evicted)); // v2.22 可观测
             }
             catch (Exception ex)
             {
@@ -257,6 +258,7 @@ public partial class SmartScheduler
                     if (ok)
                     {
                         EmitSlot($"[KV-RESTORE] KV Cache 恢复：{key} → slot{slot}（{sw.Elapsed.TotalSeconds:F1}s，跳过全量 prefill）");
+                    KvEvents.Record(new PerfEvent("kv", "restore", sw.Elapsed.TotalMilliseconds, key)); // v2.22 可观测
                         // §8：restore 后重建前缀哈希基线（旧哈希对应驱逐前状态，避免下次请求误报 MISS）
                         lock (_kvStateGate) _prefixHashes.Remove(key);
                         didRestore = true; // restore 成功：标记需重跑 TokenGuard（saved_n 残留 + 新 prompt 叠加可能击穿窗口）

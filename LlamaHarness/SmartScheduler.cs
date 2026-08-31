@@ -194,6 +194,9 @@ public sealed partial class SmartScheduler : IDisposable
     /// <summary>请求时延追踪器（供 perf.log / 监控页订阅 Completed 与读 Recent/Stats）。</summary>
     public RequestTimingTracker Timing => _timing;
 
+    /// <summary>KV 缓存事件追踪器（v2.22 可观测）：save/restore 单次耗时事件流（供 perf.log kv 行与监控页）。</summary>
+    public PerfEventTracker KvEvents { get; } = new();
+
     private void OnServerOutput(string line)
     {
         Log?.Invoke(line);
