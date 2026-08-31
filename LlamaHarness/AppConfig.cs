@@ -127,6 +127,28 @@ public class AppConfig
         new() { Id = "dsh_agent", Name = "DSH 主 Agent", UiPrefix = "dsh_agent_global", Match = AffinityMatchType.UaAndHeaderPrefix, UaContains = "deepseek-harness", HeaderPrefix = "X-Stainless-", Key = "dsh_agent_global", Priority = 4, TooltipAutoPre = "勾选后 DSH 主 Agent（dsh_agent_global）槽位自动强占：空闲不被 LRU 驱逐。注意 parallel=2 时若两槽都被强占，新会话将排队等待（上限 30s）。", TooltipSnap = "勾选后 DSH 主 Agent（dsh_agent_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
     };
 
+    /// <summary>数值兜底统一入口：越界时回退黄金默认值。Load() 与配置导入共用同一套规则，避免规则漂移（修复导入路径 CtxSize 与 Load 不一致）。</summary>
+    public static void Sanitize(AppConfig cfg)
+    {
+        if (cfg.Port is < 1 or > 65534) cfg.Port = 8080; // 上限 65534：智能模式后端端口 = Port+1，65535 会与前端端口冲突
+        if (cfg.CtxSize <= 0) cfg.CtxSize = 65536;
+        if (cfg.Ngl < 0) cfg.Ngl = 999;
+        if (cfg.Parallel <= 0) cfg.Parallel = 1;
+        if (cfg.Threads <= 0) cfg.Threads = Environment.ProcessorCount;
+        if (cfg.UbatchSize <= 0) cfg.UbatchSize = 2048;
+        if (cfg.BatchSize <= 0) cfg.BatchSize = 8192;
+        if (cfg.SpecDraftNMax < 0) cfg.SpecDraftNMax = 2; // 0 = 用户显式禁用，不兜底
+        if (cfg.BatchThreads < 0) cfg.BatchThreads = 0;   // 0 = 不拼 --tb
+        if (cfg.IdleMinutes <= 0) cfg.IdleMinutes = 15;
+        if (cfg.ReservedOutputTokens <= 0) cfg.ReservedOutputTokens = 8192;
+        if (cfg.ReservedPromptOverhead < 0) cfg.ReservedPromptOverhead = 10240;
+        if (cfg.CacheRamMiB < 0) cfg.CacheRamMiB = 0;
+        if (cfg.MaxContinuations < 1) cfg.MaxContinuations = 10;
+        if (cfg.ContinuationTimeoutSeconds < 30) cfg.ContinuationTimeoutSeconds = 300;
+        if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
+        if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
+    }
+
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>
 
     public static AppConfig Load(out string? loadError)
@@ -144,24 +166,7 @@ public class AppConfig
             if (cfg == null)
                 throw new InvalidOperationException("反序列化结果为空");
 
-            // 数值兜底：越界时回退黄金默认值
-            if (cfg.Port is < 1 or > 65534) cfg.Port = 8080; // 上限 65534：智能模式后端端口 = Port+1，65535 会与前端端口冲突
-            if (cfg.CtxSize <= 0) cfg.CtxSize = 65536;
-            if (cfg.Ngl < 0) cfg.Ngl = 999;
-            if (cfg.Parallel <= 0) cfg.Parallel = 1;
-            if (cfg.Threads <= 0) cfg.Threads = Environment.ProcessorCount;
-            if (cfg.UbatchSize <= 0) cfg.UbatchSize = 2048;
-            if (cfg.BatchSize <= 0) cfg.BatchSize = 8192;
-            if (cfg.SpecDraftNMax < 0) cfg.SpecDraftNMax = 2; // 0 = 用户显式禁用，不兜底
-            if (cfg.BatchThreads < 0) cfg.BatchThreads = 0;   // 0 = 不拼 --tb
-            if (cfg.IdleMinutes <= 0) cfg.IdleMinutes = 15;
-            if (cfg.ReservedOutputTokens <= 0) cfg.ReservedOutputTokens = 8192;
-            if (cfg.ReservedPromptOverhead < 0) cfg.ReservedPromptOverhead = 10240;
-            if (cfg.CacheRamMiB < 0) cfg.CacheRamMiB = 0;
-            if (cfg.MaxContinuations < 1) cfg.MaxContinuations = 10;
-            if (cfg.ContinuationTimeoutSeconds < 30) cfg.ContinuationTimeoutSeconds = 300;
-            if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
-            if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
+            Sanitize(cfg); // 数值兜底统一入口（Load/导入共用，规则集中在 Sanitize）
             return cfg;
         }
         catch (Exception ex)

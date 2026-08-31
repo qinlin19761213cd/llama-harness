@@ -144,13 +144,7 @@ public sealed class MainFormPresenter
             var cfg = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(dlg.FileName))
                 ?? throw new InvalidOperationException("反序列化结果为空");
 
-            // 数值兜底：与 AppConfig.Load 相同规则，防止越界值
-            if (cfg.Port is < 1 or > 65534) cfg.Port = 8080;
-            if (cfg.CtxSize <= 0) cfg.CtxSize = 262144;
-            if (cfg.Ngl < 0) cfg.Ngl = 999;
-            if (cfg.Parallel <= 0) cfg.Parallel = 1;
-            if (cfg.Threads <= 0) cfg.Threads = Environment.ProcessorCount;
-            if (cfg.IdleMinutes <= 0) cfg.IdleMinutes = 15;
+            AppConfig.Sanitize(cfg); // 数值兜底：与 Load 共用统一规则（集中维护，防漂移）
 
             _view.ApplyConfigToUi(cfg);    // 写入全部 UI 控件
             _view.SyncConfigFromUi();      // UI → 共享配置对象（下次唤醒即生效）
