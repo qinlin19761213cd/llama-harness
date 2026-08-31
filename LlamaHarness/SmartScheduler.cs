@@ -41,6 +41,7 @@ public sealed partial class SmartScheduler : IDisposable
 
     private Task? _wakeTask;
     private int _inflight;                       // 在途请求计数（含排队等待唤醒的）
+    private readonly InFlightTracker _inflightTracker = new(); // 在途任务明细（状态栏服务阶段卡片展示，v2.18）
     private long _lastTouchTicks = DateTime.Now.Ticks; // 闲置计时基准（Interlocked 保护，跨线程读写）
     private int _phase;                          // Phase 索引，统一经 Volatile.Read/Write 访问
     private volatile int _backendPort;           // 实际运行时后端端口（自动探测空闲）
@@ -72,6 +73,8 @@ public sealed partial class SmartScheduler : IDisposable
     public event Action<Phase>? PhaseChanged;
     /// <summary>C-007：进入 Waking 阶段时触发，UI 据此重置统计解析器（职责下沉到调度器内部，不再依赖 UI 自行监听 PhaseChanged）。</summary>
     public event Action? StatsReset;
+    /// <summary>在途任务登记/移除变更（可能来自任意线程），UI 侧据此刷新服务阶段卡片明细。</summary>
+    public event Action? InFlightChanged;
     /// <summary>思考模式状态变更（可能来自任意线程），UI 侧负责 BeginInvoke。参数为当前档位。</summary>
     public event Action<ThinkingLevel>? ThinkingModeChanged;
     /// <summary>槽位绑定变更（新绑定/驱逐），UI 侧刷新槽位表格。</summary>
@@ -152,6 +155,9 @@ public sealed partial class SmartScheduler : IDisposable
         var aff = _affinity;
         return aff?.Snapshot();
     }
+
+    /// <summary>获取在途任务明细快照（右侧状态栏「服务阶段」卡片展示）。空 = 无在途。</summary>
+    public IReadOnlyList<InFlightTracker.InFlightTask> GetInFlightTasks() => _inflightTracker.Snapshot();
 
     /// <summary>设置指定绑定的强占模式（UI 槽位管理页调用）。</summary>
     public void SetSlotPreemptive(string key, bool value) => _affinity?.SetPreemptive(key, value);

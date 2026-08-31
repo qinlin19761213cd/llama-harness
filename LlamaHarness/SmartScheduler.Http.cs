@@ -136,6 +136,12 @@ public partial class SmartScheduler
 
         int cur = Interlocked.Increment(ref _inflight);
         if (cur > Volatile.Read(ref _inflightPeak)) Volatile.Write(ref _inflightPeak, cur); // C-102 峰值记录
+        // 在途任务明细登记（v2.18 状态栏服务阶段卡片）：方法 + 路径 + 亲和应用名（未知请求 App 为 null）
+        var affTask = _affinity;
+        string? taskKey = affTask?.GetAffinityKey(req.Headers);
+        string? taskApp = taskKey == null ? null : affTask?.AppNameOf(taskKey);
+        int taskSeq = _inflightTracker.Register(req.HttpMethod, req.Url?.AbsolutePath ?? req.RawUrl ?? "?", taskApp);
+        InFlightChanged?.Invoke();
         try
         {
             // 首请求排队等待唤醒完成（共享同一唤醒任务，防多进程冲突）
@@ -155,6 +161,8 @@ public partial class SmartScheduler
         finally
         {
             Interlocked.Decrement(ref _inflight);
+            _inflightTracker.Unregister(taskSeq);
+            InFlightChanged?.Invoke();
         }
     }
 
