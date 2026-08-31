@@ -96,6 +96,9 @@ public static class PerfLog
         if (p.PreemptTrigger is int pre) sb.Append(",preempt=").Append(pre);
         if (p.LogDroppedLines is long ld) sb.Append(",log_dropped=").Append(ld);
         if (p.LogFlushCostMs is double lf) sb.Append(",log_flush=").Append(lf.ToString("F2"));
+        if (p.KvHitDelta is int kh) sb.Append(",kv_hit=").Append(kh);
+        if (p.KvFalseMiss is int kf) sb.Append(",kv_false=").Append(kf);
+        if (p.SavedN is int sn) sb.Append(",saved_n=").Append(sn);
         WriteLine("count", sb);
     }
 

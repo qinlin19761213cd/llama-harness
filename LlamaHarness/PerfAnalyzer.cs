@@ -37,6 +37,55 @@ public sealed class PerfLogSummary
     public double FailureRate => Requests > 0 ? (double)FailedRequests / Requests : 0;
 }
 
+/// <summary>单会话摘要（v2.22 可观测：perf.log 按 sid 聚合，跨会话/跨版本对比单元）。</summary>
+public sealed class PerfSessionSummary
+{
+    public string Sid { get; init; } = "";
+    public string? Version { get; init; }
+    public DateTime? Start { get; init; }
+    public DateTime? End { get; init; }
+    public int KvSaveCount { get; init; }
+    public int KvRestoreCount { get; init; }
+    public double? AvgKvSaveMs { get; init; }
+    public double? AvgKvRestoreMs { get; init; }
+    public int SlotSelectCount { get; init; }
+    public double? AvgSlotSelectMs { get; init; }
+    public double? MaxSlotSelectMs { get; init; }
+    public int WakeupCount { get; init; }
+    public double? AvgWakeupMs { get; init; }
+    public long KvHit { get; init; }
+    public long KvFalseMiss { get; init; }
+    public long SavedN { get; init; }
+    public long Evict { get; init; }
+    public long Preempt { get; init; }
+    public long LogDropped { get; init; }
+    public double? LogFlushAvgMs { get; init; }
+    public long Requests { get; init; }
+    public double? AvgTotalMs { get; init; }
+    public double? MinTgTps { get; init; }
+    public double? MaxVramMb { get; init; }
+    /// <summary>KV 命中率（hit/(hit+false_miss)；无计数为 NaN）。</summary>
+    public double KvHitRate => KvHit + KvFalseMiss > 0 ? (double)KvHit / (KvHit + KvFalseMiss) : double.NaN;
+}
+
+/// <summary>退化归因项（当前会话 vs 基线会话的单项对比）。</summary>
+public sealed class PerfRegressionItem
+{
+    public string Metric { get; init; } = "";
+    public string Label { get; init; } = "";
+    public double? Before { get; init; }
+    public double? After { get; init; }
+    /// <summary>变化百分比（正 = 上涨，负 = 下降；无基线为 null）。</summary>
+    public double? DeltaPct { get; init; }
+    public string? Cause { get; init; }
+}
+
+/// <summary>退化归因分析结果（当前 vs 基线）。</summary>
+public sealed class PerfRegression
+{
+    public List<PerfRegressionItem> Items { get; } = new();
+}
+
 /// <summary>
 /// 性能分析器（v2.21 方案③双源共享分析内核）：实时（周期采样点连续窗口阈值 + 单请求时延）与离线（perf.log 解析）
 /// 共用同一套指标键（<see cref="ValueOf"/>）与阈值规则语义，避免"实时图与历史分析对不上"。
@@ -230,7 +279,170 @@ public static class PerfAnalyzer
         };
     }
 
+    /// <summary>
+    /// 解析 perf.log 为会话分组（v2.22）：按 session 边界（sid）聚合，每个会话输出统计摘要。
+    /// count 行取会话内最后一行（累积终值，分析端按相邻 count 行差分得增量）；事件行（kv/sched）聚合次数与均值。
+    /// 会话内行解析与 <see cref="ParsePerfLog"/> 同源（ParseKeyValues/GetD 共用）。格式容错：非法行跳过不抛。
+    /// </summary>
+    public static List<PerfSessionSummary> ParseSessions(string path)
+    {
+        var sessions = new List<PerfSessionSummary>();
+        var sb = new SessionBuilder();
+        if (!File.Exists(path)) return sessions;
+        try
+        {
+            foreach (var line in File.ReadLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var parts = line.Split(',');
+                if (parts.Length < 2) continue;
+                var kv = ParseKeyValues(parts, 2);
+                switch (parts[0])
+                {
+                    case "session":
+                        if (GetS(kv, "type") == "start") { sb = new SessionBuilder { Sid = GetS(kv, "sid") ?? "", Version = GetS(kv, "ver"), Start = ParseTs(parts[1]) }; }
+                        else if (GetS(kv, "type") == "end")
+                        {
+                            sb.End = ParseTs(parts[1]);
+                            sessions.Add(sb.Build());
+                            sb = new SessionBuilder();
+                        }
+                        break;
+                    case "kv":
+                        sb.AddKvEvent(GetS(kv, "op"), GetD(kv, "ms"));
+                        break;
+                    case "sched":
+                        sb.AddSchedEvent(GetS(kv, "op"), GetD(kv, "ms"));
+                        break;
+                    case "count":
+                        sb.SetCounts(GetL(kv, "kv_hit"), GetL(kv, "kv_false"), GetL(kv, "saved_n"),
+                            GetL(kv, "evict"), GetL(kv, "preempt"), GetL(kv, "log_dropped"), GetD(kv, "log_flush"));
+                        break;
+                    case "timing":
+                        sb.Requests++;
+                        sb.TotalSum += GetD(kv, "total") ?? 0;
+                        break;
+                    case "cpp":
+                        var tg = GetD(kv, "tg_tps");
+                        if (tg != null && (sb.MinTg == null || tg < sb.MinTg)) sb.MinTg = tg;
+                        break;
+                    case "system":
+                        var vu = GetD(kv, "vram");
+                        if (vu != null && (sb.MaxVram == null || vu > sb.MaxVram)) sb.MaxVram = vu;
+                        break;
+                }
+            }
+        }
+        catch { /* 尽力而为 */ }
+        // 文件末未闭合会话：强制收尾
+        if (sb.Sid.Length > 0) sessions.Add(sb.Build());
+        return sessions;
+    }
+
+    /// <summary>退化归因：当前会话 vs 基线会话，找出显著劣化（≥10% 相对变化）的指标并给出归因提示。</summary>
+    public static PerfRegression CompareSessions(PerfSessionSummary? baseline, PerfSessionSummary current)
+    {
+        var r = new PerfRegression();
+        if (baseline == null || current == null) return r;
+        AddReg(r, "avg_total_ms", "请求平均总时延", baseline.AvgTotalMs, current.AvgTotalMs, above: true,
+            cause: current.AvgTotalMs > baseline.AvgTotalMs && baseline.AvgTotalMs > 0 ? InferTotalMsCause(baseline, current) : null);
+        AddReg(r, "min_tg_tps", "生成吞吐(最低)", baseline.MinTgTps, current.MinTgTps, above: false, cause: "推理吞吐下降 → prefill/generate 变慢或后端排队");
+        AddReg(r, "kv_hit_rate", "KV 命中率", RateOrNull(baseline), RateOrNull(current), above: false, cause: "KV 命中下降 → 前缀变更频繁或驱逐未保存快照");
+        AddReg(r, "avg_slot_select_ms", "槽选择耗时均值", baseline.AvgSlotSelectMs, current.AvgSlotSelectMs, above: true, cause: "槽选择变慢 → 全槽强占排队或并发请求超槽位");
+        AddReg(r, "avg_kv_restore_ms", "KV 恢复耗时均值", baseline.AvgKvRestoreMs, current.AvgKvRestoreMs, above: true, cause: "KV 恢复变慢 → restore 命中链长或磁盘快照读取慢");
+        AddReg(r, "log_dropped", "日志丢弃累计", baseline.LogDropped, current.LogDropped, above: true, cause: "日志队列溢出 → 写盘压力大或突发高日志量");
+        return r;
+    }
+
     // —— 内部辅助 ——
+
+    /// <summary>会话内聚合构建器（ParseSessions 内部状态）。</summary>
+    private sealed class SessionBuilder
+    {
+        public string Sid = "";
+        public string? Version;
+        public DateTime? Start, End;
+        public int KvSaveCount, KvRestoreCount;
+        public double KvSaveSum, KvRestoreSum;
+        public int SlotSelectCount, WakeupCount;
+        public double SlotSelectSum, SlotSelectMax, WakeupSum;
+        public long KvHit, KvFalseMiss, SavedN, Evict, Preempt, LogDropped, Requests;
+        public double TotalSum;
+        public double? LogFlushAvg, MinTg, MaxVram;
+        public void AddKvEvent(string? op, double? ms)
+        {
+            if (ms == null) return;
+            if (op == "save") { KvSaveCount++; KvSaveSum += ms.Value; }
+            else if (op == "restore") { KvRestoreCount++; KvRestoreSum += ms.Value; }
+        }
+        public void AddSchedEvent(string? op, double? ms)
+        {
+            if (ms == null) return;
+            if (op == "slot_select") { SlotSelectCount++; SlotSelectSum += ms.Value; if (ms.Value > SlotSelectMax) SlotSelectMax = ms.Value; }
+            else if (op == "wakeup") { WakeupCount++; WakeupSum += ms.Value; }
+        }
+        public void SetCounts(long? kvHit, long? kvFalse, long? savedN, long? evict, long? preempt, long? logDropped, double? logFlush)
+        {
+            if (kvHit != null) KvHit = kvHit.Value;
+            if (kvFalse != null) KvFalseMiss = kvFalse.Value;
+            if (savedN != null) SavedN = savedN.Value;
+            if (evict != null) Evict = evict.Value;
+            if (preempt != null) Preempt = preempt.Value;
+            if (logDropped != null) LogDropped = logDropped.Value;
+            if (logFlush != null) LogFlushAvg = logFlush.Value;
+        }
+        public PerfSessionSummary Build() => new()
+        {
+            Sid = Sid, Version = Version, Start = Start, End = End,
+            KvSaveCount = KvSaveCount, KvRestoreCount = KvRestoreCount,
+            AvgKvSaveMs = KvSaveCount > 0 ? Math.Round(KvSaveSum / KvSaveCount, 1) : null,
+            AvgKvRestoreMs = KvRestoreCount > 0 ? Math.Round(KvRestoreSum / KvRestoreCount, 1) : null,
+            SlotSelectCount = SlotSelectCount,
+            AvgSlotSelectMs = SlotSelectCount > 0 ? Math.Round(SlotSelectSum / SlotSelectCount, 1) : null,
+            MaxSlotSelectMs = SlotSelectCount > 0 ? Math.Round(SlotSelectMax, 1) : null,
+            WakeupCount = WakeupCount,
+            AvgWakeupMs = WakeupCount > 0 ? Math.Round(WakeupSum / WakeupCount, 1) : null,
+            KvHit = KvHit, KvFalseMiss = KvFalseMiss, SavedN = SavedN,
+            Evict = Evict, Preempt = Preempt, LogDropped = LogDropped, LogFlushAvgMs = LogFlushAvg,
+            Requests = Requests, AvgTotalMs = Requests > 0 ? Math.Round(TotalSum / Requests, 1) : null,
+            MinTgTps = MinTg is double mt ? Math.Round(mt, 1) : null,
+            MaxVramMb = MaxVram is double mv ? Math.Round(mv, 0) : null,
+        };
+    }
+
+    private static double? RateOrNull(PerfSessionSummary s) => double.IsNaN(s.KvHitRate) ? null : s.KvHitRate;
+
+    private static void AddReg(PerfRegression r, string metric, string label, double? before, double? after, bool above, string? cause)
+    {
+        if (before == null || after == null || before == 0) return;
+        double deltaPct = (after.Value - before.Value) / Math.Abs(before.Value) * 100;
+        bool worse = above ? deltaPct >= 10 : deltaPct <= -10;
+        if (!worse) return;
+        r.Items.Add(new PerfRegressionItem
+        {
+            Metric = metric, Label = label, Before = Math.Round(before.Value, 2),
+            After = Math.Round(after.Value, 2), DeltaPct = Math.Round(deltaPct, 1), Cause = cause,
+        });
+    }
+
+    /// <summary>总时延劣化归因：尝试分解为调度/KV/推理环节（按各自均值占比）。</summary>
+    private static string? InferTotalMsCause(PerfSessionSummary baseline, PerfSessionSummary current)
+    {
+        var parts = new List<string>();
+        if (current.MinTgTps != null && baseline.MinTgTps != null && current.MinTgTps < baseline.MinTgTps * 0.9)
+            parts.Add("推理吞吐下降");
+        if (current.AvgSlotSelectMs != null && baseline.AvgSlotSelectMs != null && current.AvgSlotSelectMs > baseline.AvgSlotSelectMs * 1.1)
+            parts.Add("槽选择排队变长");
+        if (current.AvgKvRestoreMs != null && baseline.AvgKvRestoreMs != null && current.AvgKvRestoreMs > baseline.AvgKvRestoreMs * 1.1)
+            parts.Add("KV 恢复变慢");
+        return parts.Count > 0 ? string.Join(" + ", parts) : null;
+    }
+
+    private static DateTime? ParseTs(string s) => DateTime.TryParse(s, out var t) ? t : null;
+    private static string? GetS(Dictionary<string, string> kv, string key)
+        => kv.TryGetValue(key, out var s) ? s : null;
+    private static long? GetL(Dictionary<string, string> kv, string key)
+        => kv.TryGetValue(key, out var s) && long.TryParse(s, out var v) ? v : null;
 
     private static bool IsOver(double v, PerfThresholdRule rule) => rule.Direction switch
     {
