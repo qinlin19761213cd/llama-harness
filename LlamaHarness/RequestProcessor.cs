@@ -12,13 +12,26 @@ namespace LlamaHarness;
 /// </summary>
 public static class RequestProcessor
 {
-    /// <summary>读取请求体字节（仅 POST；GET 返回 null）。</summary>
-    public static async Task<byte[]?> ReadRequestBodyAsync(HttpListenerRequest req)
+    /// <summary>读取请求体字节（仅 POST；GET 返回 null）。AH-5：超 maxBytes 抛 InvalidDataException（调用方回 413，防本机恶意大 body 内存 DoS）。</summary>
+    public static async Task<byte[]?> ReadRequestBodyAsync(HttpListenerRequest req, int maxBytes)
     {
         if (!string.Equals(req.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
             return null;
+        if (maxBytes <= 0) maxBytes = 64 * 1024 * 1024; // 安全兜底
+        if (req.ContentLength64 > maxBytes) // 预检 Content-Length（有声明时）
+            throw new InvalidDataException($"请求体过大（Content-Length {req.ContentLength64} 超过上限 {maxBytes} 字节）。");
         using var ms = new MemoryStream();
-        await req.InputStream.CopyToAsync(ms);
+        byte[] buf = new byte[81920];
+        long total = 0;
+        while (true)
+        {
+            int n = await req.InputStream.ReadAsync(buf, 0, buf.Length);
+            if (n <= 0) break;
+            total += n;
+            if (total > maxBytes)
+                throw new InvalidDataException($"请求体过大（超过上限 {maxBytes} 字节）。");
+            ms.Write(buf, 0, n);
+        }
         return ms.ToArray();
     }
 
@@ -168,17 +181,18 @@ public static class RequestProcessor
         resp.Close();
     }
 
-    /// <summary>错误响应写出（{"error":"..."}，转义安全；客户端已断开时静默忽略）。</summary>
+    /// <summary>错误响应写出（{"error":"..."}，JSON 序列化转义安全——含控制字符/换行/代理对；客户端已断开时静默忽略）。</summary>
     public static void WriteError(HttpListenerContext ctx, int code, string msg)
     {
         try
         {
-            var safe = msg.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            // AH-6：JsonSerializer 序列化转义 \n/\r/\u2028 等控制字符，避免异常消息含换行时响应体非法 JSON
+            var body = System.Text.Json.JsonSerializer.Serialize(new { error = msg });
             var resp = ctx.Response;
             resp.StatusCode = code;
             resp.ContentType = "application/json";
             resp.ContentEncoding = System.Text.Encoding.UTF8;
-            var body = $"{{\"error\":\"{safe}\"}}";
+
             var buf = System.Text.Encoding.UTF8.GetBytes(body);
             resp.ContentLength64 = buf.Length;
             resp.OutputStream.Write(buf);

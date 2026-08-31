@@ -154,4 +154,14 @@ public class AffinityRuleMatcherTests
         var (_, key, _, _, _, _) = aff.GetSlot(Headers(("X-Custom", "x1")));
         Assert.Equal("c_x1", key);
     }
+
+    [Fact]
+    public void OversizedHeaderValue_NotMatched_KeyNotInflated() // AH-16
+    {
+        // oversized header value (>256) excluded from binding to prevent key bloat
+        var h = Headers(("x-deepseek-harness-user-id", new string('A', 300)));
+        Assert.Null(AffinityRuleMatcher.Match(h, DefaultRules));
+        var ok = Headers(("x-deepseek-harness-user-id", "u1"));
+        Assert.Equal("dsh_rule_u1", AffinityRuleMatcher.Match(ok, DefaultRules));
+    }
 }

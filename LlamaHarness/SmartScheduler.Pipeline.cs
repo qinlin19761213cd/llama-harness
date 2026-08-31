@@ -13,6 +13,8 @@ namespace LlamaHarness;
 public partial class SmartScheduler
 {
     private const int ReconnectDelayMs = 500;
+    /// <summary>AH-5：请求体大小上限（本机恶意大 body 内存 DoS 防护）。64MB 远大于 LLM 请求体实际量级（256K 上下文 JSON 约数 MB）。</summary>
+    private const int MaxRequestBodyBytes = 64 * 1024 * 1024;
     /// <summary>把请求原样转发到后端；ResponseHeadersRead + CopyToAsync 保证 SSE/流式响应直通。
     /// 审计 O-8：按管道阶段拆分为 读体 → 网关预处理 → 转发管道 → 完成清理 四段，本方法仅做编排。</summary>
     private async Task ForwardAsync(HttpListenerContext ctx)
@@ -22,7 +24,17 @@ public partial class SmartScheduler
         string path = req.Url?.AbsolutePath ?? "";
 
         // ① 读取完整请求体（非流式检测 / 强制流式改写需要）；GET 无请求体
-        byte[]? bodyBytes = await RequestProcessor.ReadRequestBodyAsync(req);
+        // AH-5：请求体大小上限（本机恶意大 body 内存 DoS 防护）；超限 413
+        byte[]? bodyBytes;
+        try
+        {
+            bodyBytes = await RequestProcessor.ReadRequestBodyAsync(req, MaxRequestBodyBytes);
+        }
+        catch (InvalidDataException ex)
+        {
+            RequestProcessor.WriteError(ctx, 413, ex.Message);
+            return;
+        }
 
         // 请求体 dump（应用识别分析用）：每个 POST 请求的原始 body + headers 落盘；O-18：默认关闭，配置开启才生效（防 prompt 隐私落盘与无谓 IO）
         if (bodyBytes != null && bodyBytes.Length > 0 && _cfg.RequestDumpEnabled)

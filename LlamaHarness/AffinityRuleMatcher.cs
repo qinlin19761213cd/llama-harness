@@ -9,6 +9,9 @@ namespace LlamaHarness;
 /// </summary>
 public static class AffinityRuleMatcher
 {
+    /// <summary>AH-16：头值参与亲和 key 时的长度上限（防客户端超长头导致 key 膨胀——KV 文件名/JSON/内存）。</summary>
+    private const int MaxHeaderValueLength = 256;
+
     /// <summary>按 Priority 升序遍历规则，第一条命中返回 key；全不命中返回 null（调用方走随机槽，不建绑定）。</summary>
     public static string? Match(NameValueCollection headers, IEnumerable<AffinityRule> rules)
     {
@@ -29,6 +32,7 @@ public static class AffinityRuleMatcher
             {
                 var hv = headers[r.Header];
                 if (string.IsNullOrEmpty(hv)) return null;
+                if (hv.Length > MaxHeaderValueLength) return null; // AH-16：超长头值不参与绑定（防 key 膨胀）
                 return r.KeyTemplate.Replace("{value}", hv);
             }
             case AffinityMatchType.HeaderValue:
