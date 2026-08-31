@@ -18,6 +18,7 @@ public partial class MainForm : Form
     private readonly StatsPanelView _stats;
     private readonly SlotPanelView _slot;
     private readonly MonitorPanelView _monitor;
+    private readonly PerfSampler _perfSampler;
     private readonly MainFormPresenter _presenter;
 
 
@@ -35,6 +36,7 @@ public partial class MainForm : Form
         _stats = new StatsPanelView(_scheduler, _status, () => IsHandleCreated, InvokeOnUi);
         _slot = new SlotPanelView(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
         _monitor = new MonitorPanelView(_config, _status, () => _scheduler.BackendPort, () => IsDisposed, AppendLog); // AH-1：监控采集用运行时后端端口
+        _perfSampler = new PerfSampler(() => _scheduler.BackendPort, () => _scheduler.InflightCount); // v2.21 性能采样（双节奏 1s/5s，端口门控 cpp）
         _presenter = new MainFormPresenter(this, _config, _scheduler, _status, _stats, _slot, _monitor);
 
         BuildUi();
@@ -62,6 +64,9 @@ public partial class MainForm : Form
         _scheduler.Initialize();
 
         // 系统资源改为手动触发（无轮询）：点击「手动刷新」按钮才采集一次
+
+        // 性能采样器：常驻后台（1s 轻量 + 5s 慢指标），随应用生命周期启停（v2.21）
+        _perfSampler.Start();
 
         // 日志防抖定时器：批量消费队列，减少 RichTextBox 重绘闪烁（LogView 常驻运行）
         _logView.Start();
@@ -163,6 +168,7 @@ public partial class MainForm : Form
         SyncConfigFromUi();
         if (!_config.Save(out string? err))
             AppendLog($"警告：配置保存失败：{err}");
+        _perfSampler.Dispose(); // 停止后台采样（Step2 接线）
         _scheduler.Dispose();
         LogFile.Shutdown(); // E-6：Flush + 关闭常驻日志写入器（防缓冲丢失）
     }

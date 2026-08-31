@@ -185,6 +185,9 @@ public sealed partial class SmartScheduler : IDisposable
     /// <summary>实际运行时后端端口（智能模式探测/手动模式=_cfg.Port；唤醒后有效，未唤醒为 0）。供监控采集等使用。</summary>
     public int BackendPort => _backendPort;
 
+    /// <summary>在途请求计数（含排队等待唤醒）；供性能采样/监控读取（v2.21）。</summary>
+    public int InflightCount => Volatile.Read(ref _inflight);
+
     private void OnServerOutput(string line)
     {
         Log?.Invoke(line);
