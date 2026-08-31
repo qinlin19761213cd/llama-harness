@@ -255,7 +255,11 @@ public static class OutputContinuer
             {
                 var choice = (obj["choices"] as JsonArray)?.FirstOrDefault()?.AsObject();
                 var delta = choice?["delta"]?.AsObject();
-                var content = delta?["content"]?.GetValue<string>();
+                // AH-2：content 可为数组（多模态 [{type:...}]），GetValue<string> 抛异常会中断整条 SSE 流；类型防护 + 数组序列化累积
+                string? content = null;
+                var contentNode = delta?["content"];
+                if (contentNode is JsonValue cv && cv.TryGetValue<string>(out var s)) content = s;
+                else if (contentNode is JsonArray ca) content = ca.ToJsonString();
                 if (!string.IsNullOrEmpty(content)) state.Accumulated.Append(content);
                 if (delta?["tool_calls"] != null) state.HasToolCalls = true;
                 var fr = choice?["finish_reason"]?.GetValue<string>();

@@ -12,7 +12,7 @@ public class FlatButtonTests
     [Fact]
     public void Default_DisabledForeColor_IsCDisabledText()
     {
-        var b = new FlatButton();
+        var b = new UiTheme.FlatButton();
         Assert.Equal(UiTheme.C_DisabledText, b.DisabledForeColor);
     }
 
@@ -20,7 +20,7 @@ public class FlatButtonTests
     public void MakeBtn_Disabled_ReturnsFlatButtonDisabled()
     {
         var b = UiTheme.MakeBtn("停止", enabled: false);
-        Assert.IsType<FlatButton>(b);
+        Assert.IsType<UiTheme.FlatButton>(b);
         Assert.False(b.Enabled);
         Assert.Equal(Color.White, b.ForeColor); // 启用态白字配置不变（禁用态由自绘接管）
     }
@@ -29,14 +29,14 @@ public class FlatButtonTests
     public void MakeBtn_Enabled_ReturnsFlatButtonEnabled()
     {
         var b = UiTheme.MakeBtn("启动 / 唤醒");
-        Assert.IsType<FlatButton>(b);
+        Assert.IsType<UiTheme.FlatButton>(b);
         Assert.True(b.Enabled);
     }
 
     [Fact]
     public void ToggleEnabled_NoThrow_AndDisabledForeColorPersists()
     {
-        var b = new FlatButton { Enabled = false };
+        var b = new UiTheme.FlatButton { Enabled = false };
         b.Enabled = true;
         b.Enabled = false;
         Assert.Equal(UiTheme.C_DisabledText, b.DisabledForeColor);

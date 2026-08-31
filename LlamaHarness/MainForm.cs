@@ -34,7 +34,7 @@ public partial class MainForm : Form
         _status = new StatusPanelView(_config, _scheduler, AppendLog);
         _stats = new StatsPanelView(_scheduler, _status, () => IsHandleCreated, InvokeOnUi);
         _slot = new SlotPanelView(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
-        _monitor = new MonitorPanelView(_config, _status, () => IsDisposed, AppendLog);
+        _monitor = new MonitorPanelView(_config, _status, () => _scheduler.BackendPort, () => IsDisposed, AppendLog); // AH-1：监控采集用运行时后端端口
         _presenter = new MainFormPresenter(this, _config, _scheduler, _status, _stats, _slot, _monitor);
 
         BuildUi();

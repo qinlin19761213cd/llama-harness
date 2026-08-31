@@ -13,6 +13,7 @@ public sealed class MonitorPanelView : UserControl
     private readonly Action<string> _appendLog;
 
     private readonly SystemMetrics _metrics = new();
+    private readonly Func<int> _backendPortProvider; // 后端运行时端口提供者（AH-1：智能模式为探测端口）
     private LlamaCppMonitorCollector? _monitorCollector; // llama.cpp 采集器（懒初始化，端口确定后创建）
     private int _metricsBusy;
 
@@ -38,10 +39,11 @@ public sealed class MonitorPanelView : UserControl
     private TextBox _rawMetricsBox = null!;
 
     public MonitorPanelView(AppConfig config, StatusPanelView status,
-        Func<bool> isDisposed, Action<string> appendLog)
+        Func<int> backendPortProvider, Func<bool> isDisposed, Action<string> appendLog)
     {
         _config = config;
         _status = status;
+        _backendPortProvider = backendPortProvider;
         _isDisposed = isDisposed;
         _appendLog = appendLog;
     }
@@ -240,7 +242,8 @@ public sealed class MonitorPanelView : UserControl
     private void EnsureMonitorCollector()
     {
         if (_monitorCollector != null) return;
-        int port = _config.Port;
+        int port = _backendPortProvider(); // AH-1：用运行时后端端口（智能模式为探测端口，非前端端口）
+        if (port <= 0) return; // 后端尚未启动（未唤醒），等待下次刷新再创建
         _monitorCollector = new LlamaCppMonitorCollector($"http://127.0.0.1:{port}");
     }
 

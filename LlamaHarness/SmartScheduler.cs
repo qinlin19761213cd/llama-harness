@@ -182,6 +182,9 @@ public sealed partial class SmartScheduler : IDisposable
     /// <summary>首选后端端口 = 前端端口 + 1；若被占用则向上探测空闲端口。</summary>
     private int PreferredBackendPort => Math.Min(_cfg.Port + 1, 65535);
 
+    /// <summary>实际运行时后端端口（智能模式探测/手动模式=_cfg.Port；唤醒后有效，未唤醒为 0）。供监控采集等使用。</summary>
+    public int BackendPort => _backendPort;
+
     private void OnServerOutput(string line)
     {
         Log?.Invoke(line);
