@@ -99,22 +99,7 @@ public partial class MainForm : Form
     private int _metricsBusy;
     private bool _crashAlertShown; // 崩溃熔断红色告警状态（防重复告警；窗口滑出后自动恢复）
 
-    // —— 日志区（RichTextBox：按行独立着色 + 防抖）——
-    private readonly RichTextBox _txtLog = new()
-    {
-        Dock = DockStyle.Fill,
-        Multiline = true,
-        ReadOnly = true,
-        ScrollBars = RichTextBoxScrollBars.Vertical,
-        WordWrap = false,
-        BorderStyle = BorderStyle.None, // 无边框，消除白边
-        BackColor = UiTheme.C_TextBg,
-        ForeColor = UiTheme.C_TextFg,
-        Font = new Font("Consolas", 9F),
-    };
-    private readonly Queue<(string line, string entry)> _logQueue = new();
-    private readonly System.Windows.Forms.Timer _logFlushTimer = new() { Interval = 150 };
-
+    // —— 主日志区（LogView 承载：RichTextBox 按行独立着色 + 防抖）——
     // —— 统计区（实时解析 print_timing）——
     private readonly LlamaStatsParser _statsParser = new();
     private readonly Label _lblSummary = new()
@@ -662,7 +647,7 @@ public partial class MainForm : Form
 
         // 内容宿主：6 页叠放 + Visible 切换（_txtLog 直接作为一页，无中间包装 Panel）
         var host = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
-        _tabPages = new Control[] { _txtLog, tabStats, tabSlots, _tabSlotMgmt, tabRes, _tabConfig, _docPanel };
+        _tabPages = new Control[] { _logView.TxtLog, tabStats, tabSlots, _tabSlotMgmt, tabRes, _tabConfig, _docPanel };
         foreach (var p in _tabPages) host.Controls.Add(p);
 
         container.Controls.Add(host);
