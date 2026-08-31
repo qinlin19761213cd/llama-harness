@@ -197,6 +197,12 @@ public sealed partial class SmartScheduler : IDisposable
     /// <summary>KV 缓存事件追踪器（v2.22 可观测）：save/restore 单次耗时事件流（供 perf.log kv 行与监控页）。</summary>
     public PerfEventTracker KvEvents { get; } = new();
 
+    /// <summary>调度事件追踪器（v2.22 可观测）：slot_select / wakeup 单次耗时事件流（供 perf.log sched 行与监控页）。</summary>
+    public PerfEventTracker SchedEvents { get; } = new();
+
+    /// <summary>v2.22 可观测：调度累积型计数快照（驱逐 / 强占；null 未初始化返回 0）。</summary>
+    public (int Evict, int Preempt) SlotPerfSnapshot() => _affinity?.PerfSnapshot() ?? (0, 0);
+
     private void OnServerOutput(string line)
     {
         Log?.Invoke(line);

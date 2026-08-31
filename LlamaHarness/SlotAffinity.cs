@@ -42,6 +42,11 @@ public sealed class SlotAffinity
     private readonly HashSet<string> _toolLockedKeys = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>AH-7：未知请求轮转分配计数器（Interlocked 原子递增，替代 Random——并发下每个未知请求分到不同槽，避免同槽碰撞）。</summary>
     private int _nextRandomSlot;
+    private int _evictCount;    // v2.22 可观测：驱逐事件累计次数
+    private int _preemptCount;  // v2.22 可观测：强占触发累计次数
+
+    /// <summary>v2.22 可观测：性能事件通道（槽选择耗时 / 驱逐 / 强占）。由宿主（SmartScheduler）注入；null = 不采集。</summary>
+    public PerfEventTracker? PerfEvents { get; set; }
 
     public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null)
     {
@@ -50,6 +55,12 @@ public sealed class SlotAffinity
         _rules = rules ?? AppConfig.DefaultAffinityRules();
         Load();
         EnforcePreemptiveCap();
+    }
+
+    /// <summary>v2.22 可观测：调度累积型计数快照（驱逐 / 强占）。</summary>
+    public (int Evict, int Preempt) PerfSnapshot()
+    {
+        lock (_gate) return (_evictCount, _preemptCount);
     }
 
     /// <summary>槽位数。</summary>
@@ -74,6 +85,16 @@ public sealed class SlotAffinity
     /// <param name="autoPreemptive">自动强占前缀集合（§4.2 主力会话冻结）：key 匹配任一前缀 → 强制 Preemptive=true（暂停 LRU 驱逐）。</param>
     /// <returns>(slot, key, isNewBinding, evictedKey, evictedSlot, evictedKvCache)</returns>
     public (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache) GetSlot(
+        NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null)
+    {
+        // v2.22 可观测：槽路由选择耗时（从进入排队到分配完成，含排队等待）
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = GetSlotCore(headers, autoPreemptive);
+        PerfEvents?.Record(new PerfEvent("sched", "slot_select", sw.Elapsed.TotalMilliseconds, r.Key));
+        return r;
+    }
+
+    private (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache) GetSlotCore(
         NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null)
     {
         var key = GetAffinityKey(headers);
@@ -146,6 +167,7 @@ public sealed class SlotAffinity
                 evictedSlot = slot.Value;
                 evictedKvCache = _bindings[lruKey].KvCache;
                 _bindings.Remove(lruKey);
+                _evictCount++; // v2.22 可观测：LRU 驱逐计数
                 evicted = lruKey;
             }
             else
@@ -160,6 +182,7 @@ public sealed class SlotAffinity
                         evictedSlot = slot.Value;
                         evictedKvCache = _bindings[victim].KvCache;
                         _bindings.Remove(victim);
+                        _evictCount++; // v2.22 可观测：强占驱逐计数
                         evicted = victim;
                     }
                     else
@@ -183,6 +206,7 @@ public sealed class SlotAffinity
             if (preemptiveCount >= cap)
                 finalPre = false; // cap 已满：放弃强占，走 LRU 驱逐
         }
+        if (finalPre) _preemptCount++; // v2.22 可观测：强占触发计数（新绑定成功冻结槽位）
         _bindings[key] = new Binding { Slot = slot!.Value, LastActive = DateTime.Now, Preemptive = finalPre, KvCache = true };
         Save();
         return (slot.Value, evicted, evictedSlot, evictedKvCache);

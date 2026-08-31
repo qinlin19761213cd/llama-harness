@@ -46,6 +46,12 @@ public readonly struct PerfPoint
     /// <summary>该会话最大 token 偏移量（KV 快照 token 数）。</summary>
     public int? SavedN { get; init; }
 
+    // —— 调度累积型（SlotAffinity 会话计数快照，1s；增量 = 相邻采样点差）——
+    /// <summary>驱逐事件累计次数。</summary>
+    public int? EvictCount { get; init; }
+    /// <summary>强占触发累计次数（autoPre 冻结槽位）。</summary>
+    public int? PreemptTrigger { get; init; }
+
     /// <summary>该点是否含系统层有效指标。</summary>
     public bool HasSystem => CpuPercent != null || MemUsedGb != null || VramUsedMb != null;
     /// <summary>该点是否含 llama.cpp 层有效指标。</summary>

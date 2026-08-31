@@ -22,6 +22,7 @@ public sealed class PerfSampler : IDisposable
     private readonly Func<int> _backendPortProvider;
     private readonly Func<int> _inflightProvider;
     private readonly Func<(int Hits, int FalseMiss, int SavedN)>? _kvStatsProvider; // v2.22 KV 累积型快照源
+    private readonly Func<(int Evict, int Preempt)>? _schedStatsProvider;   // v2.22 调度累积型快照源
     private readonly System.Threading.Timer _timer;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _slowGate = new(1, 1);
@@ -45,11 +46,12 @@ public sealed class PerfSampler : IDisposable
     /// <summary>最近一次采样点（UI 实时数字展示用；null = 尚未采样）。</summary>
     public PerfPoint? LastPoint { get; private set; }
 
-    public PerfSampler(Func<int> backendPortProvider, Func<int> inflightProvider, Func<(int Hits, int FalseMiss, int SavedN)>? kvStatsProvider = null)
+    public PerfSampler(Func<int> backendPortProvider, Func<int> inflightProvider, Func<(int Hits, int FalseMiss, int SavedN)>? kvStatsProvider = null, Func<(int Evict, int Preempt)>? schedStatsProvider = null)
     {
         _backendPortProvider = backendPortProvider;
         _inflightProvider = inflightProvider;
         _kvStatsProvider = kvStatsProvider;
+        _schedStatsProvider = schedStatsProvider;
         _timer = new System.Threading.Timer(OnTick, null, System.Threading.Timeout.InfiniteTimeSpan, System.Threading.Timeout.InfiniteTimeSpan);
     }
 
@@ -86,6 +88,13 @@ public sealed class PerfSampler : IDisposable
             try { var k = _kvStatsProvider(); kvHit = k.Hits; kvFalse = k.FalseMiss; kvSaved = k.SavedN; } catch { }
         }
 
+        // —— 调度累积型快照（v2.22）：驱逐 / 强占——
+        int? evict = null, preempt = null;
+        if (_schedStatsProvider != null)
+        {
+            try { var s = _schedStatsProvider(); evict = s.Evict; preempt = s.Preempt; } catch { }
+        }
+
         // —— 慢指标节奏判定 + 异步触发（不阻塞本 tick）——
         bool slow;
         lock (_gate) { _slowCounter++; slow = (_slowCounter % SlowEveryTicks) == 0; }
@@ -116,6 +125,8 @@ public sealed class PerfSampler : IDisposable
             KvHitDelta = kvHit,
             KvFalseMiss = kvFalse,
             SavedN = kvSaved,
+            EvictCount = evict,
+            PreemptTrigger = preempt,
         };
         Series.Add(point);
         LastPoint = point;

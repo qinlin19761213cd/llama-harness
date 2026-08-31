@@ -38,7 +38,8 @@ public partial class MainForm : Form
         _slot = new SlotPanelView(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
         _monitor = new MonitorPanelView(_config, _status, () => _scheduler.BackendPort, () => IsDisposed, AppendLog); // AH-1：监控采集用运行时后端端口
         _perfSampler = new PerfSampler(() => _scheduler.BackendPort, () => _scheduler.InflightCount,
-            () => { var r = _scheduler.GetRestoreStats(); return r == null ? (0, 0, 0) : r.PerfSnapshot(); }); // v2.22 KV 累积型快照 // v2.21 性能采样（双节奏 1s/5s，端口门控 cpp）
+            () => { var r = _scheduler.GetRestoreStats(); return r == null ? (0, 0, 0) : r.PerfSnapshot(); },
+            () => _scheduler.SlotPerfSnapshot()); // v2.22 调度累积型快照 // v2.21 性能采样（双节奏 1s/5s，端口门控 cpp）
         _perfSampler.Sampled += OnPerfSampled; // 采样点 → perf.log（system 1s + cpp 5s）
         _scheduler.Timing.Completed += OnPerfTiming; // 请求时延 → perf.log（timing 事件）
         _perfMonitor = new PerfMonitorView(_perfSampler, _scheduler.Timing, _config.PerfThresholds, AppendLog); // v2.21 性能监控页

@@ -68,6 +68,7 @@ public partial class SmartScheduler
             Interlocked.Increment(ref _wakeCount);
             var elapsed = (DateTime.Now - wakeStart).TotalSeconds;
             Log?.Invoke($"llama-server 就绪，进入保活状态。（唤醒 #{Volatile.Read(ref _wakeCount)}，本次耗时 {elapsed:F1}s）");
+            SchedEvents.Record(new PerfEvent("sched", "wakeup", elapsed * 1000)); // v2.22 可观测：完整唤醒耗时
             // 唤醒成功：持久化当前参数
             if (!_cfg.Save(out string? saveErr))
                 Log?.Invoke($"警告：配置持久化失败（{saveErr}），下次启动不会恢复本次参数。");
@@ -163,6 +164,7 @@ public partial class SmartScheduler
     {
         // 槽位亲和：始终启用（单槽/多槽均激活），指纹绑定 + n_slots 路由
         _affinity = new SlotAffinity(_cfg.Parallel, rules: _cfg.AffinityRules);
+        _affinity.PerfEvents = SchedEvents; // v2.22 可观测：槽选择耗时/驱逐/强占事件流
         // 启动时强制：裁剪超额强占到 ≤ slotCount-1（保"至少 1 槽给非强占新任务"不变量）
         var evictedPreemptive = _affinity.EnforcePreemptiveCap();
         if (evictedPreemptive.Count > 0)
