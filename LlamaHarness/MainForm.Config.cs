@@ -48,16 +48,10 @@ public partial class MainForm
         _numMaxRestarts.Value = Math.Clamp(cfg.MaxAutoRestarts, (int)_numMaxRestarts.Minimum, (int)_numMaxRestarts.Maximum);
         var autoPreSet = new HashSet<string>(cfg.AutoPreemptiveApps.Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim()), StringComparer.OrdinalIgnoreCase);
-        _chkAutoPreDshRule.Checked = autoPreSet.Contains("dsh_rule");
-        _chkAutoPreWebui.Checked = autoPreSet.Contains("webui");
-        _chkAutoPreTrae.Checked = autoPreSet.Contains("trae_global");
-        _chkAutoPreDshAgent.Checked = autoPreSet.Contains("dsh_agent_global");
+        foreach (var c in _autoPreChecks) c.Checked = autoPreSet.Contains((string)c.Tag!);
         var snapSet = new HashSet<string>(cfg.AutoSnapshotKeys.Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim()), StringComparer.OrdinalIgnoreCase);
-        _chkSnapDshRule.Checked = snapSet.Contains("dsh_rule");
-        _chkSnapWebui.Checked = snapSet.Contains("webui");
-        _chkSnapTrae.Checked = snapSet.Contains("trae_global");
-        _chkSnapDshAgent.Checked = snapSet.Contains("dsh_agent_global");
+        foreach (var c in _snapChecks) c.Checked = snapSet.Contains((string)c.Tag!);
     }
 
     /// <summary>智能模式下监听器占用前端端口，改端口需重绑，监听中禁止编辑。供 Presenter（自动模式切换）调用。</summary>
@@ -102,18 +96,8 @@ public partial class MainForm
         _config.ContinuationTimeoutSeconds = (int)_numContTimeout.Value;
         _config.CrashRecoveryEnabled = _chkCrashRecover.Checked;
         _config.MaxAutoRestarts = (int)_numMaxRestarts.Value;
-        var autoPrePrefixes = new List<string>();
-        if (_chkAutoPreDshRule.Checked) autoPrePrefixes.Add("dsh_rule");
-        if (_chkAutoPreWebui.Checked) autoPrePrefixes.Add("webui");
-        if (_chkAutoPreTrae.Checked) autoPrePrefixes.Add("trae_global");
-        if (_chkAutoPreDshAgent.Checked) autoPrePrefixes.Add("dsh_agent_global");
-        _config.AutoPreemptiveApps = string.Join(",", autoPrePrefixes);
-        var snapPrefixes = new List<string>();
-        if (_chkSnapDshRule.Checked) snapPrefixes.Add("dsh_rule");
-        if (_chkSnapWebui.Checked) snapPrefixes.Add("webui");
-        if (_chkSnapTrae.Checked) snapPrefixes.Add("trae_global");
-        if (_chkSnapDshAgent.Checked) snapPrefixes.Add("dsh_agent_global");
-        _config.AutoSnapshotKeys = string.Join(",", snapPrefixes);
+        _config.AutoPreemptiveApps = string.Join(",", _autoPreChecks.Where(c => c.Checked).Select(c => (string)c.Tag!));
+        _config.AutoSnapshotKeys = string.Join(",", _snapChecks.Where(c => c.Checked).Select(c => (string)c.Tag!));
     }
 
     /// <summary>自动查找 llama-server.exe：配置路径无效时用搜索结果回填。</summary>

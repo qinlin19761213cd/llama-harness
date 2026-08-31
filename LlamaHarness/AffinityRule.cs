@@ -49,4 +49,27 @@ public sealed class AffinityRule
 
     /// <summary>匹配优先级，越小越先（1 = 最高）。</summary>
     public int Priority { get; set; }
+
+    /// <summary>UI 自动强占/自动快照 checkbox 写入 AutoPreemptiveApps/AutoSnapshotKeys 的前缀；未填时由 UiPrefixOf() 推导。</summary>
+    public string? UiPrefix { get; set; }
+
+    /// <summary>自动强占 checkbox 悬浮提示；null → UI 用模板生成。</summary>
+    public string? TooltipAutoPre { get; set; }
+
+    /// <summary>自动快照 checkbox 悬浮提示；null → UI 用模板生成。</summary>
+    public string? TooltipSnap { get; set; }
+
+    /// <summary>UI checkbox 勾选后写入 AutoPreemptiveApps/AutoSnapshotKeys 的前缀（与 SlotAffinity 前缀匹配语义一致）。
+    /// 显式 UiPrefix 优先；Header → KeyTemplate 的 {value} 前段（如 dsh_rule_{value} → dsh_rule）；固定 Key 规则 → Key。</summary>
+    public string UiPrefixOf()
+    {
+        if (!string.IsNullOrEmpty(UiPrefix)) return UiPrefix;
+        if (Match == AffinityMatchType.Header && KeyTemplate.Contains("{value}", StringComparison.Ordinal))
+        {
+            int idx = KeyTemplate.IndexOf("{value}", StringComparison.Ordinal);
+            if (idx > 0) return KeyTemplate.Substring(0, idx).TrimEnd('_', '-'); // 去掉 {value} 前段的尾部分隔符（dsh_rule_ → dsh_rule）
+        }
+        if (!string.IsNullOrEmpty(Key)) return Key;
+        return Id;
+    }
 }

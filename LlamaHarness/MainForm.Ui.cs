@@ -45,16 +45,9 @@ public partial class MainForm : Form
     private readonly CheckBox _chkRequestDump = new() { Text = "request-dump（dump 所有请求到 logs/request_dump.log）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
     private readonly ComboBox _cmbLogQueuePolicy = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, ForeColor = Color.White };
     private readonly NumericUpDown _numBatchThreads = new() { Minimum = 0, Maximum = 512, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    // §4.2 自动强占（冻结防驱逐）：按应用类型前缀，勾选 → 该类型绑定强制 Preemptive=true
-    private readonly CheckBox _chkAutoPreDshRule = new() { Text = "DSH规则", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly CheckBox _chkAutoPreWebui = new() { Text = "WebUI", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly CheckBox _chkAutoPreTrae = new() { Text = "Trae", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly CheckBox _chkAutoPreDshAgent = new() { Text = "DSH Agent", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    // 自动快照恢复（仅快照持久化，不锁槽）：前缀匹配 → 首请求存档 + Warming eager restore；不参与强占/驱逐拒绝
-    private readonly CheckBox _chkSnapDshRule = new() { Text = "DSH规则", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly CheckBox _chkSnapWebui = new() { Text = "WebUI", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly CheckBox _chkSnapTrae = new() { Text = "Trae", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly CheckBox _chkSnapDshAgent = new() { Text = "DSH Agent", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
+    // §4.2 自动强占（冻结防驱逐）/ 自动快照恢复（不锁槽）：checkbox 由 affinity_rules 动态生成（规则表即来源，新增业务仅配置）
+    private CheckBox[] _autoPreChecks = Array.Empty<CheckBox>();
+    private CheckBox[] _snapChecks = Array.Empty<CheckBox>();
     private readonly ToolTip _tooltip = new();
 
     // —— 操作按钮（Control Panel 区）——
@@ -84,6 +77,24 @@ public partial class MainForm : Form
 
     // ==================== UI 构建 ====================
 
+    /// <summary>由 affinity_rules 动态生成自动强占/自动快照 CheckBox（规则表即 checkbox 来源：数量/显示名/前缀/tooltip 全配置化）。</summary>
+    private void BuildAffinityRuleChecks()
+    {
+        var rules = _config.AffinityRules ?? AppConfig.DefaultAffinityRules();
+        _autoPreChecks = rules.Select(r => MakeAffinityCheck(r.Name, r.UiPrefixOf(),
+            r.TooltipAutoPre ?? $"勾选后 {r.Name}（{r.UiPrefixOf()}）槽位自动强占：空闲不被 LRU 驱逐。")).ToArray();
+        _snapChecks = rules.Select(r => MakeAffinityCheck(r.Name, r.UiPrefixOf(),
+            r.TooltipSnap ?? $"勾选后 {r.Name}（{r.UiPrefixOf()}）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽。")).ToArray();
+    }
+
+    private CheckBox MakeAffinityCheck(string text, string prefix, string tooltip)
+    {
+        var c = new CheckBox { Text = text, AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) };
+        c.Tag = prefix;
+        _tooltip.SetToolTip(c, tooltip);
+        return c;
+    }
+
     private void BuildUi()
     {
         Text = "Llama Harness";
@@ -96,6 +107,7 @@ public partial class MainForm : Form
         BackColor = UiTheme.C_Bg;
         ForeColor = UiTheme.C_TextFg;
 
+        BuildAffinityRuleChecks();
         var tabArea = BuildTabArea();
         var leftPanel = BuildLeftPanel();
         var titleBlock = BuildTitleBlock();
@@ -110,10 +122,10 @@ public partial class MainForm : Form
             _chkTokenGuard, _numReservedTokens,
             _chkContinuation, _numMaxContinuations, _numContTimeout,
             _chkCrashRecover, _numMaxRestarts,
-            _chkAutoPreDshRule, _chkAutoPreWebui, _chkAutoPreTrae, _chkAutoPreDshAgent,
-            _chkSnapDshRule, _chkSnapWebui, _chkSnapTrae, _chkSnapDshAgent,
-            _btnExportCfg, _btnImportCfg, // 运行中禁止导入/导出，避免改参冲突
         };
+        _paramControls = _paramControls.Concat(_autoPreChecks).Concat(_snapChecks)
+            .Concat(new Control[] { _btnExportCfg, _btnImportCfg }) // 运行中禁止导入/导出，避免改参冲突
+            .ToArray();
 
         // ════════════ 右侧主区：顶部橙色标题块 + 下方 7:3 分栏（左页签 | 右状态面板）════════════
         var rightContent = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
@@ -425,8 +437,10 @@ public partial class MainForm : Form
         // 文字框白字（禁用时也保持白字，清晰）+ CheckBox 勾改黑
         foreach (var c in new[] { _txtExe, _txtModel, _txtExtra, _txtPcoreMask, _txtKvCachePath, _txtLoadMode, _txtCacheTypeKv, _txtSpecType })
             if (c is TextBox tb) tb.ForeColor = Color.White;
-        foreach (var c in new[] { _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover, _chkFlashAttn, _chkRequestDump, _chkAutoPreDshRule, _chkAutoPreWebui, _chkAutoPreTrae, _chkAutoPreDshAgent, _chkSnapDshRule, _chkSnapWebui, _chkSnapTrae, _chkSnapDshAgent, _chkNoCacheIdleSlots })
+        foreach (var c in new[] { _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover, _chkFlashAttn, _chkRequestDump, _chkNoCacheIdleSlots })
             UiTheme.ApplyBlackCheck(c);
+        foreach (var c in _autoPreChecks) UiTheme.ApplyBlackCheck(c);
+        foreach (var c in _snapChecks) UiTheme.ApplyBlackCheck(c);
 
         var panel = new TableLayoutPanel
         {
@@ -500,16 +514,10 @@ public partial class MainForm : Form
         AddRow("崩溃恢复:", _chkCrashRecover, null);
         AddRow("最大重启:", _numMaxRestarts, null);
         var autoPreFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
-        autoPreFlow.Controls.Add(_chkAutoPreDshRule);
-        autoPreFlow.Controls.Add(_chkAutoPreWebui);
-        autoPreFlow.Controls.Add(_chkAutoPreTrae);
-        autoPreFlow.Controls.Add(_chkAutoPreDshAgent);
+        foreach (var c in _autoPreChecks) autoPreFlow.Controls.Add(c);
         AddRow("自动强占:", autoPreFlow, null);
         var snapFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
-        snapFlow.Controls.Add(_chkSnapDshRule);
-        snapFlow.Controls.Add(_chkSnapWebui);
-        snapFlow.Controls.Add(_chkSnapTrae);
-        snapFlow.Controls.Add(_chkSnapDshAgent);
+        foreach (var c in _snapChecks) snapFlow.Controls.Add(c);
         AddRow("自动快照:", snapFlow, null);
         // 模式行：标签 + CheckBox 同行（AutoSize 让 CheckBox 紧跟标签，不再撑满整行）
         var chkAutoRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
@@ -539,14 +547,6 @@ public partial class MainForm : Form
         _tooltip.SetToolTip(_chkRequestDump, "勾选后 dump 所有请求体 + headers 到 logs/request_dump.log（应用识别分析用）；不勾选 = 关闭。");
         _tooltip.SetToolTip(_cmbLogQueuePolicy, "日志管道队列满（50k 行）时的丢弃策略：drop-newest = 保留历史日志、丢新入队（默认，排查更看重最早异常源头）；drop-oldest = 丢最旧、保留新消息。");
         _tooltip.SetToolTip(_numBatchThreads, "batch 阶段 CPU 线程数（--tb）：prefill 分词/调度辅助加速；0 = 不拼接。");
-        _tooltip.SetToolTip(_chkAutoPreDshRule, "勾选后 DSH 规则引擎会话（dsh_rule_*）槽位自动强占：空闲不被 LRU 驱逐，再次提问零 Prefill 开销。");
-        _tooltip.SetToolTip(_chkAutoPreWebui, "勾选后 WebUI 会话（webui_*）槽位自动强占：空闲不被 LRU 驱逐。");
-        _tooltip.SetToolTip(_chkAutoPreTrae, "勾选后 Trae Work（trae_global）槽位自动强占：空闲不被 LRU 驱逐。");
-        _tooltip.SetToolTip(_chkAutoPreDshAgent, "勾选后 DSH 主 Agent（dsh_agent_global）槽位自动强占：空闲不被 LRU 驱逐。注意 parallel=2 时若两槽都被强占，新会话将排队等待（上限 30s）。");
-        _tooltip.SetToolTip(_chkSnapDshRule, "勾选后 DSH 规则引擎会话（dsh_rule_*）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。");
-        _tooltip.SetToolTip(_chkSnapWebui, "勾选后 WebUI 会话（webui_*）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。");
-        _tooltip.SetToolTip(_chkSnapTrae, "勾选后 Trae Work（trae_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。");
-        _tooltip.SetToolTip(_chkSnapDshAgent, "勾选后 DSH 主 Agent（dsh_agent_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。");
 
         return panel;
     }

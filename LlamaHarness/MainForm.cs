@@ -138,14 +138,8 @@ public partial class MainForm : Form
         _chkRequestDump.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         _cmbLogQueuePolicy.SelectedIndexChanged += (_, _) => _presenter.OnParamEdited();
         _numBatchThreads.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _chkAutoPreDshRule.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkAutoPreWebui.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkAutoPreTrae.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkAutoPreDshAgent.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkSnapDshRule.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkSnapWebui.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkSnapTrae.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _chkSnapDshAgent.CheckedChanged += (_, _) => _presenter.OnParamEdited();
+        foreach (var c in _autoPreChecks) c.CheckedChanged += (_, _) => _presenter.OnParamEdited();
+        foreach (var c in _snapChecks) c.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         _numIdleMin.ValueChanged += (_, _) => _presenter.OnIdleEdited();
         _chkAuto.CheckedChanged += (_, _) => _presenter.OnAutoModeEdited();
 
@@ -198,7 +192,6 @@ public partial class MainForm : Form
     private CheckBox[] ParamCheckBoxes => new[]
     {
         _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover,
-        _chkAutoPreDshRule, _chkAutoPreWebui, _chkAutoPreTrae, _chkAutoPreDshAgent,
-        _chkSnapDshRule, _chkSnapWebui, _chkSnapTrae, _chkSnapDshAgent, _chkNoCacheIdleSlots,
-    };
+        _chkNoCacheIdleSlots,
+    }.Concat(_autoPreChecks).Concat(_snapChecks).ToArray();
 }

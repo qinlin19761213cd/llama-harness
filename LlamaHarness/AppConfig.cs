@@ -121,10 +121,10 @@ public class AppConfig
     /// <summary>默认 4 条指纹规则（与重构前 GetAffinityKey 的硬编码逐字等价）：DSH 规则引擎 / WebUI / Trae Work / DSH 主 Agent。</summary>
     public static List<AffinityRule> DefaultAffinityRules() => new()
     {
-        new() { Id = "dsh_rule", Name = "DSH 规则引擎", Match = AffinityMatchType.Header, Header = "x-deepseek-harness-user-id", KeyTemplate = "dsh_rule_{value}", Priority = 1 },
-        new() { Id = "webui", Name = "WebUI", Match = AffinityMatchType.Header, Header = "X-Conversation-Id", KeyTemplate = "webui_{value}", Priority = 2 },
-        new() { Id = "trae_global", Name = "Trae Work", Match = AffinityMatchType.HeaderValue, Header = "x-model-provider", Value = "custom_openai_compatible", Key = "trae_global", Priority = 3 },
-        new() { Id = "dsh_agent", Name = "DSH 主 Agent", Match = AffinityMatchType.UaAndHeaderPrefix, UaContains = "deepseek-harness", HeaderPrefix = "X-Stainless-", Key = "dsh_agent_global", Priority = 4 },
+        new() { Id = "dsh_rule", Name = "DSH 规则引擎", UiPrefix = "dsh_rule", Match = AffinityMatchType.Header, Header = "x-deepseek-harness-user-id", KeyTemplate = "dsh_rule_{value}", Priority = 1, TooltipAutoPre = "勾选后 DSH 规则引擎会话（dsh_rule_*）槽位自动强占：空闲不被 LRU 驱逐，再次提问零 Prefill 开销。", TooltipSnap = "勾选后 DSH 规则引擎会话（dsh_rule_*）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+        new() { Id = "webui", Name = "WebUI", UiPrefix = "webui", Match = AffinityMatchType.Header, Header = "X-Conversation-Id", KeyTemplate = "webui_{value}", Priority = 2, TooltipAutoPre = "勾选后 WebUI 会话（webui_*）槽位自动强占：空闲不被 LRU 驱逐。", TooltipSnap = "勾选后 WebUI 会话（webui_*）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+        new() { Id = "trae_global", Name = "Trae Work", UiPrefix = "trae_global", Match = AffinityMatchType.HeaderValue, Header = "x-model-provider", Value = "custom_openai_compatible", Key = "trae_global", Priority = 3, TooltipAutoPre = "勾选后 Trae Work（trae_global）槽位自动强占：空闲不被 LRU 驱逐。", TooltipSnap = "勾选后 Trae Work（trae_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+        new() { Id = "dsh_agent", Name = "DSH 主 Agent", UiPrefix = "dsh_agent_global", Match = AffinityMatchType.UaAndHeaderPrefix, UaContains = "deepseek-harness", HeaderPrefix = "X-Stainless-", Key = "dsh_agent_global", Priority = 4, TooltipAutoPre = "勾选后 DSH 主 Agent（dsh_agent_global）槽位自动强占：空闲不被 LRU 驱逐。注意 parallel=2 时若两槽都被强占，新会话将排队等待（上限 30s）。", TooltipSnap = "勾选后 DSH 主 Agent（dsh_agent_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
     };
 
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>
