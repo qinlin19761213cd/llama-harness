@@ -153,7 +153,7 @@ public partial class SmartScheduler
     private void InitRuntimeAssemblies(int srvPort)
     {
         // 槽位亲和：始终启用（单槽/多槽均激活），指纹绑定 + n_slots 路由
-        _affinity = new SlotAffinity(_cfg.Parallel);
+        _affinity = new SlotAffinity(_cfg.Parallel, rules: _cfg.AffinityRules);
         // 启动时强制：裁剪超额强占到 ≤ slotCount-1（保"至少 1 槽给非强占新任务"不变量）
         var evictedPreemptive = _affinity.EnforcePreemptiveCap();
         if (evictedPreemptive.Count > 0)

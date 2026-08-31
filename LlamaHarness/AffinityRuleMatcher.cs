@@ -1,0 +1,79 @@
+using System.Collections.Specialized;
+
+namespace LlamaHarness;
+
+/// <summary>
+/// 指纹规则匹配引擎（v2.16）：按优先级顺序对请求头执行规则匹配，产出亲和 Key。
+/// 取代原 SlotAffinity.GetAffinityKey() 硬编码的 4 组 if-else；规则来自 config.json 的 affinity_rules。
+/// 纯静态、可单测；新增业务 = 配置追加规则，零代码改动。
+/// </summary>
+public static class AffinityRuleMatcher
+{
+    /// <summary>按 Priority 升序遍历规则，第一条命中返回 key；全不命中返回 null（调用方走随机槽，不建绑定）。</summary>
+    public static string? Match(NameValueCollection headers, IEnumerable<AffinityRule> rules)
+    {
+        foreach (var r in rules.OrderBy(x => x.Priority))
+        {
+            var key = TryMatch(headers, r);
+            if (key != null) return key;
+        }
+        return null;
+    }
+
+    /// <summary>单条规则匹配；命中返回 key，未命中返回 null。</summary>
+    private static string? TryMatch(NameValueCollection headers, AffinityRule r)
+    {
+        switch (r.Match)
+        {
+            case AffinityMatchType.Header:
+            {
+                var hv = headers[r.Header];
+                if (string.IsNullOrEmpty(hv)) return null;
+                return r.KeyTemplate.Replace("{value}", hv);
+            }
+            case AffinityMatchType.HeaderValue:
+            {
+                var mv = headers[r.Header];
+                if (string.IsNullOrEmpty(r.Value) || !string.Equals(mv, r.Value, StringComparison.OrdinalIgnoreCase))
+                    return null;
+                return r.Key;
+            }
+            case AffinityMatchType.UaAndHeaderPrefix:
+            {
+                var ua = headers["User-Agent"] ?? "";
+                if (!ua.Contains(r.UaContains, StringComparison.OrdinalIgnoreCase)) return null;
+                foreach (var k in headers.AllKeys)
+                {
+                    if (k != null && k.StartsWith(r.HeaderPrefix, StringComparison.OrdinalIgnoreCase))
+                        return r.Key;
+                }
+                return null;
+            }
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>按规则派生应用显示名：固定 Key 精确匹配优先，KeyTemplate 前缀匹配其次；未知返回 "未知应用"。</summary>
+    public static string AppNameOf(string key, IEnumerable<AffinityRule> rules)
+    {
+        foreach (var r in rules)
+        {
+            // 固定 key 规则：精确匹配（忽略大小写）
+            if (!string.IsNullOrEmpty(r.Key) && string.Equals(key, r.Key, StringComparison.OrdinalIgnoreCase))
+                return r.Name;
+            // 模板规则：key 以 {value} 之前的前缀开头
+            if (!string.IsNullOrEmpty(r.KeyTemplate))
+            {
+                int ph = r.KeyTemplate.IndexOf("{value}", StringComparison.Ordinal);
+                if (ph > 0)
+                {
+                    var prefix = r.KeyTemplate.Substring(0, ph);
+                    if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        return r.Name;
+                }
+            }
+        }
+        return "未知应用";
+    }
+}

@@ -14,6 +14,7 @@ namespace LlamaHarness;
 /// </summary>
 public sealed class SlotAffinity
 {
+    private readonly IReadOnlyList<AffinityRule> _rules;
     private readonly int _slotCount;
     private readonly object _gate = new();
     private readonly Dictionary<string, Binding> _bindings = new(StringComparer.OrdinalIgnoreCase);
@@ -37,55 +38,24 @@ public sealed class SlotAffinity
     /// 驱逐优先级：Tool 链锁定 > 手动/自动强占（Tool 是瞬态的，循环结束自动解锁）。</summary>
     private readonly HashSet<string> _toolLockedKeys = new(StringComparer.OrdinalIgnoreCase);
 
-    public SlotAffinity(int slotCount, int maxWaitSeconds = 30)
+    public SlotAffinity(int slotCount, int maxWaitSeconds = 30, IReadOnlyList<AffinityRule>? rules = null)
     {
         _slotCount = Math.Max(1, slotCount);
         _maxWaitSeconds = Math.Max(1, maxWaitSeconds);
+        _rules = rules ?? AppConfig.DefaultAffinityRules();
         Load();
-        // 启动时强制：从持久化恢复后裁剪超额强占（防旧实现遗留全槽强占死锁）
         EnforcePreemptiveCap();
     }
 
     /// <summary>槽位数。</summary>
     public int SlotCount => _slotCount;
 
-    /// <summary>指纹识别：返回亲和 Key；null = 未知请求（不建立绑定）。</summary>
-    public static string? GetAffinityKey(NameValueCollection h)
-    {
-        // 优先级1：DSH 规则引擎（用户级永久绑定，最精准）
-        if (TryGetHeader(h, "x-deepseek-harness-user-id", out var uid) && !string.IsNullOrEmpty(uid))
-            return $"dsh_rule_{uid}";
+    /// <summary>指纹识别：按配置规则（affinity_rules）识别业务返回亲和 Key；null = 未知请求（不建立绑定）。
+    /// 规则有序按 Priority 匹配，新增业务 = 配置追加规则，零代码改动（v2.16 替代原硬编码 4 组 if）。</summary>
+    public string? GetAffinityKey(NameValueCollection h) => AffinityRuleMatcher.Match(h, _rules);
 
-        // 优先级2：WebUI（会话级绑定）
-        if (TryGetHeader(h, "X-Conversation-Id", out var cid) && !string.IsNullOrEmpty(cid))
-            return $"webui_{cid}";
-
-        // 优先级3：Trae Work（独家特征头）
-        if (TryGetHeader(h, "x-model-provider", out var mp) && string.Equals(mp, "custom_openai_compatible", StringComparison.OrdinalIgnoreCase))
-            return "trae_global";
-
-        // 优先级4：DSH 主 Agent（UA + X-Stainless 系列头）
-        var ua = TryGetHeader(h, "User-Agent", out var uaVal) ? uaVal : "";
-        bool hasStainless = false;
-        foreach (var k in h.AllKeys)
-        {
-            if (k != null && k.StartsWith("X-Stainless-", StringComparison.OrdinalIgnoreCase)) { hasStainless = true; break; }
-        }
-        if (ua.Contains("deepseek-harness", StringComparison.OrdinalIgnoreCase) && hasStainless)
-            return "dsh_agent_global";
-
-        return null; // 未知请求 → 轮询，不绑定
-    }
-
-    /// <summary>根据亲和 Key 前缀派生应用显示名。</summary>
-    public static string AppNameOf(string key)
-    {
-        if (key.StartsWith("trae_")) return "Trae Work";
-        if (key.StartsWith("webui_")) return "WebUI";
-        if (key.StartsWith("dsh_rule_")) return "DSH 规则引擎";
-        if (key.StartsWith("dsh_agent_")) return "DSH 主 Agent";
-        return "未知应用";
-    }
+    /// <summary>按配置规则（affinity_rules）派生应用显示名。</summary>
+    public string AppNameOf(string key) => AffinityRuleMatcher.AppNameOf(key, _rules);
 
     /// <summary>
     /// 获取请求的槽位：已绑定 → 其槽位（刷新活跃时间）；新 Key → 空闲槽或 LRU 驱逐。

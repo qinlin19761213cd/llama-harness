@@ -74,6 +74,9 @@ public class AppConfig
     public string AutoPreemptiveApps { get; set; } = "dsh_agent_global,trae_global";
     /// <summary>自动快照 key（仅快照持久化，不锁槽）：逗号分隔前缀。key 匹配任一前缀 → 首请求存档 + Warming eager restore；不参与槽位强占/驱逐拒绝（与 AutoPreemptiveApps 解耦）。默认 trae_global。</summary>
     public string AutoSnapshotKeys { get; set; } = "trae_global";
+
+    /// <summary>指纹识别规则（v2.16）：有序按 Priority 升序匹配，第一条命中即返回。新增业务 = 配置追加一条规则，零代码改动。默认 4 条与重构前 GetAffinityKey 逐字等价。</summary>
+    public List<AffinityRule> AffinityRules { get; set; } = DefaultAffinityRules();
     /// <summary>请求体 dump 开关（应用识别分析用）：每个 POST 的原始 body + headers 落盘 request_dump.log。默认关闭——防 prompt 隐私落盘与无谓 IO（审计 O-18）。</summary>
     public bool RequestDumpEnabled { get; set; } = false;
     /// <summary>日志管道队列满丢弃策略：DropNewest = 保留历史、丢新入队（默认——排查更看重最早异常源头）；DropOldest = 丢最旧、保留新消息。</summary>
@@ -106,6 +109,7 @@ public class AppConfig
     {
         WriteIndented = true,
         PropertyNamingPolicy = new SnakeCaseNamingPolicy(),
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
     };
 
     /// <summary>旧版 config.json 为 PascalCase 字段名：仅用于兼容读取；保存一律写新 snake_case 格式。</summary>
@@ -114,7 +118,17 @@ public class AppConfig
     /// <summary>确保 config/ 目录存在（幂等）。</summary>
     private static void EnsureConfigDir() => AppPaths.EnsureConfigDir();
 
+    /// <summary>默认 4 条指纹规则（与重构前 GetAffinityKey 的硬编码逐字等价）：DSH 规则引擎 / WebUI / Trae Work / DSH 主 Agent。</summary>
+    public static List<AffinityRule> DefaultAffinityRules() => new()
+    {
+        new() { Id = "dsh_rule", Name = "DSH 规则引擎", Match = AffinityMatchType.Header, Header = "x-deepseek-harness-user-id", KeyTemplate = "dsh_rule_{value}", Priority = 1 },
+        new() { Id = "webui", Name = "WebUI", Match = AffinityMatchType.Header, Header = "X-Conversation-Id", KeyTemplate = "webui_{value}", Priority = 2 },
+        new() { Id = "trae_global", Name = "Trae Work", Match = AffinityMatchType.HeaderValue, Header = "x-model-provider", Value = "custom_openai_compatible", Key = "trae_global", Priority = 3 },
+        new() { Id = "dsh_agent", Name = "DSH 主 Agent", Match = AffinityMatchType.UaAndHeaderPrefix, UaContains = "deepseek-harness", HeaderPrefix = "X-Stainless-", Key = "dsh_agent_global", Priority = 4 },
+    };
+
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>
+
     public static AppConfig Load(out string? loadError)
     {
         loadError = null;
