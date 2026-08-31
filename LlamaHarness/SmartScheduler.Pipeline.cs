@@ -15,6 +15,8 @@ public partial class SmartScheduler
     private const int ReconnectDelayMs = 500;
     /// <summary>AH-5：请求体大小上限（本机恶意大 body 内存 DoS 防护）。64MB 远大于 LLM 请求体实际量级（256K 上下文 JSON 约数 MB）。</summary>
     private const int MaxRequestBodyBytes = 64 * 1024 * 1024;
+    /// <summary>AH-21：请求 dump 隐私提示一次性标记。</summary>
+    private int _dumpPrivacyWarned;
     /// <summary>把请求原样转发到后端；ResponseHeadersRead + CopyToAsync 保证 SSE/流式响应直通。
     /// 审计 O-8：按管道阶段拆分为 读体 → 网关预处理 → 转发管道 → 完成清理 四段，本方法仅做编排。</summary>
     private async Task ForwardAsync(HttpListenerContext ctx)
@@ -362,6 +364,9 @@ public partial class SmartScheduler
     /// 时间戳由管道 Enqueue 侧统一添加（秒级精度）。</summary>
     private void DumpRequest(HttpListenerContext ctx, byte[] bodyBytes)
     {
+        // AH-21：首次 dump 提示隐私风险（request_dump.log 完整落盘请求体与请求头，含对话/prompt 内容）
+        if (Interlocked.Exchange(ref _dumpPrivacyWarned, 1) == 0)
+            Log?.Invoke("注意：请求体 dump 已启用（RequestDumpEnabled）——request_dump.log 将完整记录请求体与请求头，包含对话与 prompt 隐私内容，请仅在本地分析时开启。");
         try
         {
             var req = ctx.Request;

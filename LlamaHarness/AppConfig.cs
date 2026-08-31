@@ -160,8 +160,8 @@ public class AppConfig
                 return new AppConfig();
 
             var json = File.ReadAllText(ConfigPath);
-            // 兼容：旧版 config.json 为 PascalCase 字段名（新版统一 snake_case_lower）；按字段名探测选择反序列化选项
-            var opts = json.Contains("\"ExePath\"") ? LegacyJsonOpts : JsonOpts;
+            // 兼容：旧版 config.json 为 PascalCase 字段名（新版统一 snake_case_lower）；按实际 JSON 属性探测选择反序列化选项
+            var opts = HasProperty(json, "ExePath") ? LegacyJsonOpts : JsonOpts;
             var cfg = JsonSerializer.Deserialize<AppConfig>(json, opts);
             if (cfg == null)
                 throw new InvalidOperationException("反序列化结果为空");
@@ -174,6 +174,18 @@ public class AppConfig
             loadError = $"config.json 读取失败，已回退默认值：{ex.Message}";
             return new AppConfig();
         }
+    }
+
+    /// <summary>AH-19：JSON 根对象是否存在指定属性（替代 Contains 字符串探测，防注释/字符串内容恰好含字段名导致误判）。</summary>
+    private static bool HasProperty(string json, string name)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty(name, out _);
+        }
+        catch { return false; }
     }
 
     /// <summary>单槽输入 token 预算：上下文均摊到每槽，扣除输出预留 + Prompt 头部开销预留（tools/system/Jinja 模板隐形 token）。审计 O-9：收敛此前散落 5 处的重复公式。</summary>
