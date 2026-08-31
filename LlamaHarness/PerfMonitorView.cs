@@ -62,7 +62,7 @@ public sealed class PerfMonitorView : UserControl
         };
 
         // 行0：工具栏（标题 + 指标切换按钮 + 时间戳）
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         var toolbar = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = UiTheme.C_Bg };
         var title = new Label
         {
@@ -114,18 +114,16 @@ public sealed class PerfMonitorView : UserControl
         layout.Controls.Add(toolbar, 0, 0);
         RefreshMetricBtns();
 
-        // 行1：趋势图卡片
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var chartCard = UiTheme.MakeCardPanel();
-        chartCard.Height = 300;
+        // 行1：趋势图卡片（固定 300 高；禁 AutoSize——TLP AutoSize 行按 PreferredSize 塌陷固定高度子控件）
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));
+        var chartCard = MakePerfCard();
         _chart = new PerfTrendChart { Dock = DockStyle.Fill, Margin = new Padding(4) };
         chartCard.Controls.Add(_chart);
         layout.Controls.Add(chartCard, 0, 1);
 
-        // 行2：实时数字卡片（2 行 3 列：CPU/内存/显存/吞吐/KV/在途）
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var numCard = UiTheme.MakeCardPanel();
-        numCard.Height = 120;
+        // 行2：实时数字卡片（固定 120 高；禁 AutoSize）
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        var numCard = MakePerfCard();
         var numGrid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -145,10 +143,9 @@ public sealed class PerfMonitorView : UserControl
         numCard.Controls.Add(numGrid);
         layout.Controls.Add(numCard, 0, 2);
 
-        // 行3：请求时延卡片（3 列 2 行）
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var timingCard = UiTheme.MakeCardPanel();
-        timingCard.Height = 120;
+        // 行3：请求时延卡片（固定 120 高；禁 AutoSize）
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        var timingCard = MakePerfCard();
         var tGrid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -186,11 +183,11 @@ public sealed class PerfMonitorView : UserControl
         alarmCard.Controls.Add(_lblAlarms);
         layout.Controls.Add(alarmCard, 0, 5);
 
-        // 行6：perf.log 会话摘要卡片
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        // 行6：perf.log 会话摘要卡片（固定 220 高；按钮 Dock=Bottom 需固定卡片底）
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
         var logTitle = UiTheme.MakeCardTitle("perf.log 会话摘要（离线分析）");
         layout.Controls.Add(logTitle, 0, 6);
-        var logCard = UiTheme.MakeCardPanel();
+        var logCard = MakePerfCard();
         _lblLogSummary = new Label
         {
             Dock = DockStyle.Fill,
@@ -229,6 +226,15 @@ public sealed class PerfMonitorView : UserControl
         _timer.Start();
         return this;
     }
+
+    /// <summary>创建固定高度卡片容器（Dock=Fill + 禁 AutoSize）。</summary>
+    /// <remarks>不能用 UiTheme.MakeCardPanel：其 AutoSize=true，在 TableLayoutPanel 的 AutoSize 行里行高按 PreferredSize 计算，固定 Height 的卡片会塌陷为 0。</remarks>
+    private static Panel MakePerfCard() => new()
+    {
+        Dock = DockStyle.Fill,
+        BackColor = UiTheme.C_Card,
+        Padding = new Padding(8),
+    };
 
     /// <summary>释放：停止定时器并取消事件订阅（防泄漏）。</summary>
     public void Shutdown()
