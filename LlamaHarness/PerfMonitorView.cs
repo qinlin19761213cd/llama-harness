@@ -29,6 +29,7 @@ public sealed class PerfMonitorView : UserControl
     private Label _lblReqTotal = null!, _lblReqFail = null!, _lblAvgTotal = null!, _lblMaxTotal = null!, _lblAvgBackend = null!, _lblFailRate = null!;
     private Label _lblAlarms = null!;
     private Label _lblLogSummary = null!;
+    private Label _lblKvHit = null!, _lblKvFalse = null!, _lblEvict = null!, _lblPreempt = null!, _lblLogDrop = null!, _lblLogFlush = null!;
     private Label _lblPerfTimestamp = null!;
     private readonly Button[] _metricBtns = new Button[4];
 
@@ -183,10 +184,32 @@ public sealed class PerfMonitorView : UserControl
         alarmCard.Controls.Add(_lblAlarms);
         layout.Controls.Add(alarmCard, 0, 5);
 
-        // 行6：perf.log 会话摘要卡片（固定 220 高；按钮 Dock=Bottom 需固定卡片底）
+        // 行6：KV/调度/日志管道指标卡片（v2.22，固定 120 高；禁 AutoSize）
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        var obsCard = MakePerfCard();
+        var oGrid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = UiTheme.C_Card,
+            ColumnCount = 3,
+            RowCount = 2,
+            Padding = new Padding(4),
+        };
+        for (int c = 0; c < 3; c++) oGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        for (int r = 0; r < 2; r++) oGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+        AddNumCell(oGrid, 0, 0, "KV 命中", out _lblKvHit);
+        AddNumCell(oGrid, 1, 0, "KV 误判", out _lblKvFalse);
+        AddNumCell(oGrid, 2, 0, "调度驱逐", out _lblEvict);
+        AddNumCell(oGrid, 0, 1, "强占触发", out _lblPreempt);
+        AddNumCell(oGrid, 1, 1, "日志丢弃", out _lblLogDrop);
+        AddNumCell(oGrid, 2, 1, "日志 flush", out _lblLogFlush);
+        obsCard.Controls.Add(oGrid);
+        layout.Controls.Add(obsCard, 0, 6);
+
+        // 行7：perf.log 会话对比卡片（固定 220 高；按钮 Dock=Bottom 需固定卡片底）
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
-        var logTitle = UiTheme.MakeCardTitle("perf.log 会话摘要（离线分析）");
-        layout.Controls.Add(logTitle, 0, 6);
+        var logTitle = UiTheme.MakeCardTitle("perf.log 会话对比（离线分析）");
+        layout.Controls.Add(logTitle, 0, 7);
         var logCard = MakePerfCard();
         _lblLogSummary = new Label
         {
@@ -213,7 +236,7 @@ public sealed class PerfMonitorView : UserControl
         btnRefreshLog.Click += (_, _) => RefreshLogSummary();
         logCard.Controls.Add(_lblLogSummary);
         logCard.Controls.Add(btnRefreshLog);
-        layout.Controls.Add(logCard, 0, 7);
+        layout.Controls.Add(logCard, 0, 8);
 
         Controls.Add(layout);
 
@@ -268,6 +291,14 @@ public sealed class PerfMonitorView : UserControl
         }
         _lblVram.Text = summary.LastVramMb is double lv ? $"{lv / 1024:F1}G" : "—";
         _lblTg.Text = summary.AvgTgTps is double tg ? $"{tg:F1} t/s" : "—";
+
+        // v2.22 KV/调度/日志管道累积指标（来自最近采样点快照）
+        _lblKvHit.Text = last?.KvHitDelta?.ToString() ?? "—";
+        _lblKvFalse.Text = last?.KvFalseMiss?.ToString() ?? "—";
+        _lblEvict.Text = last?.EvictCount?.ToString() ?? "—";
+        _lblPreempt.Text = last?.PreemptTrigger?.ToString() ?? "—";
+        _lblLogDrop.Text = last?.LogDroppedLines?.ToString() ?? "—";
+        _lblLogFlush.Text = last?.LogFlushCostMs is double lf2 ? $"{lf2:F2} ms" : "—";
 
         // 请求时延统计
         var stats = _timing.Stats();
@@ -351,19 +382,51 @@ public sealed class PerfMonitorView : UserControl
                 _lblLogSummary.Text = $"perf.log 为空或不存在（{s.Path}）";
                 return;
             }
-            _lblLogSummary.Text =
-                $"文件: {s.Path}\n" +
-                $"范围: {s.FirstTs:MM-dd HH:mm:ss} ~ {s.LastTs:MM-dd HH:mm:ss}  共 {s.TotalLines} 行\n" +
-                $"采样: system {s.SystemCount} / cpp {s.CppCount} / timing {s.TimingCount}\n" +
-                $"请求: {s.Requests} 次（失败 {s.FailedRequests}，失败率 {s.FailureRate * 100:F1}%）\n" +
-                $"时延: 平均 {s.AvgTotalMs:F0} ms / 最大 {s.MaxTotalMs:F0} ms\n" +
-                $"峰值显存: {(s.MaxVramMb is double mv ? $"{mv / 1024:F1}G" : "—")}  最低吞吐: {(s.MinTgTps is double mt ? $"{mt:F1} t/s" : "—")}";
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"文件: {s.Path}\n");
+            sb.Append($"范围: {s.FirstTs:MM-dd HH:mm:ss} ~ {s.LastTs:MM-dd HH:mm:ss}  共 {s.TotalLines} 行\n");
+            // v2.22 会话对比视图：最近 2 会话 + 退化归因（有会话边界行才展示；旧格式日志兜底文件统计）
+            var sessions = PerfAnalyzer.ParseSessions(AppPaths.PerfLog);
+            var last2 = sessions.Count >= 2 ? sessions.GetRange(sessions.Count - 2, 2) : sessions;
+            if (last2.Count == 0)
+            {
+                sb.Append($"采样: system {s.SystemCount} / cpp {s.CppCount} / timing {s.TimingCount}\n");
+                sb.Append($"请求: {s.Requests} 次（失败 {s.FailedRequests}，失败率 {s.FailureRate * 100:F1}%）\n");
+                sb.Append($"时延: 平均 {s.AvgTotalMs:F0} ms / 最大 {s.MaxTotalMs:F0} ms\n");
+                sb.Append($"峰值显存: {(s.MaxVramMb is double mv ? $"{mv / 1024:F1}G" : "—")}  最低吞吐: {(s.MinTgTps is double mt ? $"{mt:F1} t/s" : "—")}");
+            }
+            else
+            {
+                var cur = last2[^1];
+                sb.Append($"会话 {SidShort(cur.Sid)}  v{cur.Version}  {cur.Start:MM-dd HH:mm:ss}~{(cur.End is DateTime e ? e.ToString("HH:mm:ss") : "进行中")}\n");
+                sb.Append($"  KV 命中率 {(double.IsNaN(cur.KvHitRate) ? "—" : $"{cur.KvHitRate * 100:F1}%")}  命中 {cur.KvHit} / 误判 {cur.KvFalseMiss}   驱逐 {cur.Evict}  强占 {cur.Preempt}\n");
+                sb.Append($"  槽选择 {cur.SlotSelectCount} 次(均 {Fmt(cur.AvgSlotSelectMs)}ms)  唤醒 {cur.WakeupCount} 次(均 {Fmt(cur.AvgWakeupMs)}ms)  KV 保存 {cur.KvSaveCount}(均 {Fmt(cur.AvgKvSaveMs)}ms) 恢复 {cur.KvRestoreCount}(均 {Fmt(cur.AvgKvRestoreMs)}ms)\n");
+                sb.Append($"  日志丢弃 {cur.LogDropped} 行  flush {Fmt(cur.LogFlushAvgMs)}ms  请求 {cur.Requests}(均 {Fmt(cur.AvgTotalMs)}ms)  最低吞吐 {Fmt(cur.MinTgTps)}");
+                if (last2.Count >= 2)
+                {
+                    var reg = PerfAnalyzer.CompareSessions(last2[^2], cur);
+                    if (reg.Items.Count > 0)
+                    {
+                        sb.Append("\n  [退化] 相比上会话：");
+                        foreach (var it in reg.Items)
+                            sb.Append($"\n    - {it.Label} {Fmt(it.Before)}→{Fmt(it.After)} ({(it.DeltaPct > 0 ? "+" : "")}{it.DeltaPct:F0}%){(it.Cause != null ? "  · " + it.Cause : "")}");
+                    }
+                    else
+                    {
+                        sb.Append("\n  [正常] 相比上会话无显著退化（<10% 阈值）");
+                    }
+                }
+            }
+            _lblLogSummary.Text = sb.ToString().TrimEnd();
         }
         catch (Exception ex)
         {
             _lblLogSummary.Text = $"perf.log 读取失败：{ex.Message}";
         }
     }
+
+    private static string SidShort(string sid) => sid.Length > 8 ? sid[..8] : sid;
+    private static string Fmt(double? v) => v is double d ? $"{d:F1}" : "—";
 
     // —— 控件辅助 ——
 
