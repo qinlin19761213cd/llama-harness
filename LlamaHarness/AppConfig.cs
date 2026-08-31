@@ -82,6 +82,14 @@ public class AppConfig
     /// <summary>日志管道队列满丢弃策略：DropNewest = 保留历史、丢新入队（默认——排查更看重最早异常源头）；DropOldest = 丢最旧、保留新消息。</summary>
     public QueueFullPolicy LogQueueFullPolicy { get; set; } = QueueFullPolicy.DropNewest;
 
+    // —— v2.21 性能监控配置 ——
+    /// <summary>性能监控总开关（采样器/性能日志/监控页）。</summary>
+    public bool PerfMonitoringEnabled { get; set; } = true;
+    /// <summary>采样时间序列窗口（秒）：1s 采样 × N 点。默认 3600 ≈ 1 小时。</summary>
+    public int PerfSeriesSeconds { get; set; } = 3600;
+    /// <summary>性能阈值规则（配置驱动，v2.21）：指标键/方向/警告/严重/持续秒；新增或改阈值 = 配置追加，零代码改动。</summary>
+    public List<PerfThresholdRule> PerfThresholds { get; set; } = PerfThresholdRule.Defaults();
+
     /// <summary>配置文件路径：项目目录下 config/config.json。</summary>
     private static string ConfigPath => AppPaths.ConfigJson;
 
@@ -147,6 +155,7 @@ public class AppConfig
         if (cfg.ContinuationTimeoutSeconds < 30) cfg.ContinuationTimeoutSeconds = 300;
         if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
         if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
+        if (cfg.PerfSeriesSeconds is < 60 or > 86400) cfg.PerfSeriesSeconds = 3600; // 性能窗口 1 分钟~24 小时
     }
 
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>
