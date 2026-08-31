@@ -450,115 +450,138 @@ public partial class MainForm : Form
             BackColor = Color.Transparent,
         };
 
-        // 分组框 + 3 列参数网格（v2.17：按 基础/资源/高级 三组建立视觉层次）
-        TableLayoutPanel NewGroup(string title)
+        // 三组分组各自构建（v2.17.2 按 GroupBox 拆方法：基础/资源/高级，单方法 ~45 行）
+        BuildBasicGroup(root);
+        BuildResourceGroup(root);
+        BuildAdvancedGroup(root);
+
+        // 中文注释：已有 23 条逐字保留 + 补 11 条核心参数（v2.17）
+        BuildTooltips();
+
+        return root;
+    }
+
+    /// <summary>分组框 + 3 列参数网格：建 GroupBox 挂到 root，返回网格供 AddRow 填充。</summary>
+    private TableLayoutPanel NewGroup(Control root, string title)
+    {
+        var g = new GroupBox
         {
-            var g = new GroupBox
-            {
-                Text = title,
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                BackColor = Color.Transparent,
-                ForeColor = Color.FromArgb(210, 210, 210),
-                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
-                Margin = new Padding(0, 0, 0, 10),
-            };
-            var grid = new TableLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                ColumnCount = 3,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                BackColor = Color.Transparent,
-                Margin = new Padding(10, 6, 10, 10),
-            };
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            g.Controls.Add(grid);
-            root.Controls.Add(g);
-            return grid;
-        }
-
-        void AddRow(TableLayoutPanel grid, string label, Control value, Control? extra)
+            Text = title,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Color.Transparent,
+            ForeColor = Color.FromArgb(210, 210, 210),
+            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+            Margin = new Padding(0, 0, 0, 10),
+        };
+        var grid = new TableLayoutPanel
         {
-            int row = grid.RowStyles.Count;
-            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            var lbl = new Label
-            {
-                Text = label,
-                AutoSize = true,
-                ForeColor = Color.White,
-                Font = new Font("Microsoft YaHei UI", 9F),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Margin = new Padding(0, 4, 6, 4),
-            };
-            grid.Controls.Add(lbl, 0, row);
-            value.Margin = new Padding(0, 2, 0, 2);
-            grid.Controls.Add(value, 1, row);
-            if (extra != null)
-            {
-                extra.Margin = new Padding(2, 0, 0, 0);
-                grid.Controls.Add(extra, 2, row);
-            }
+            Dock = DockStyle.Top,
+            ColumnCount = 3,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Color.Transparent,
+            Margin = new Padding(10, 6, 10, 10),
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        g.Controls.Add(grid);
+        root.Controls.Add(g);
+        return grid;
+    }
+
+    /// <summary>3 列网格加一行：label（AutoSize 左）+ value（百分宽）+ extra（右侧按钮/说明）。</summary>
+    private void AddRow(TableLayoutPanel grid, string label, Control value, Control? extra = null)
+    {
+        int row = grid.RowStyles.Count;
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var lbl = new Label
+        {
+            Text = label,
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Microsoft YaHei UI", 9F),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 4, 6, 4),
+        };
+        grid.Controls.Add(lbl, 0, row);
+        value.Margin = new Padding(0, 2, 0, 2);
+        grid.Controls.Add(value, 1, row);
+        if (extra != null)
+        {
+            extra.Margin = new Padding(2, 0, 0, 0);
+            grid.Controls.Add(extra, 2, row);
         }
+    }
 
-        // ▍基础参数 · 模型加载与推理
-        var gBasic = NewGroup("▍基础参数 · 模型加载与推理");
-        AddRow(gBasic, "exe:", _txtExe, _btnBrowseExe);
-        AddRow(gBasic, "模型:", _txtModel, _btnBrowseModel);
-        AddRow(gBasic, "端口:", _numPort, null);
-        AddRow(gBasic, "ctx:", _numCtx, null);
-        AddRow(gBasic, "ngl:", _numNgl, null);
-        AddRow(gBasic, "parallel:", _numParallel, null);
-        AddRow(gBasic, "kv:", _chkNoKv, null);
-        AddRow(gBasic, "线程:", _numThreads, null);
-        AddRow(gBasic, "load-mode:", _txtLoadMode, null);
-        AddRow(gBasic, "ubatch:", _numUbatch, null);
-        AddRow(gBasic, "batch:", _numBatch, null);
-        AddRow(gBasic, "cache-type-k/v:", _txtCacheTypeKv, null);
-        AddRow(gBasic, "flash-attn:", _chkFlashAttn, null);
-        AddRow(gBasic, "spec-type:", _txtSpecType, null);
-        AddRow(gBasic, "spec-draft-n-max:", _numSpecDraftNMax, null);
+    /// <summary>▍基础参数 · 模型加载与推理（15 项）。</summary>
+    private void BuildBasicGroup(Control root)
+    {
+        var g = NewGroup(root, "▍基础参数 · 模型加载与推理");
+        AddRow(g, "exe:", _txtExe, _btnBrowseExe);
+        AddRow(g, "模型:", _txtModel, _btnBrowseModel);
+        AddRow(g, "端口:", _numPort);
+        AddRow(g, "ctx:", _numCtx);
+        AddRow(g, "ngl:", _numNgl);
+        AddRow(g, "parallel:", _numParallel);
+        AddRow(g, "kv:", _chkNoKv);
+        AddRow(g, "线程:", _numThreads);
+        AddRow(g, "load-mode:", _txtLoadMode);
+        AddRow(g, "ubatch:", _numUbatch);
+        AddRow(g, "batch:", _numBatch);
+        AddRow(g, "cache-type-k/v:", _txtCacheTypeKv);
+        AddRow(g, "flash-attn:", _chkFlashAttn);
+        AddRow(g, "spec-type:", _txtSpecType);
+        AddRow(g, "spec-draft-n-max:", _numSpecDraftNMax);
+    }
 
-        // ▍资源管理 · 缓存/快照/显存
-        var gRes = NewGroup("▍资源管理 · 缓存/快照/显存");
-        AddRow(gRes, "缓存路径:", _txtKvCachePath, null);
-        AddRow(gRes, "Cache-RAM(MiB):", _numCacheRam, null);
-        AddRow(gRes, "空闲slot缓存:", _chkNoCacheIdleSlots, null);
-        AddRow(gRes, "Token Guard:", _chkTokenGuard, null);
-        AddRow(gRes, "输出预留:", _numReservedTokens, null);
-        AddRow(gRes, "Prompt头部开销:", _numPromptOverhead, null);
-        AddRow(gRes, "request-dump:", _chkRequestDump, null);
+    /// <summary>▍资源管理 · 缓存/快照/显存（10 项）。</summary>
+    private void BuildResourceGroup(Control root)
+    {
+        var g = NewGroup(root, "▍资源管理 · 缓存/快照/显存");
+        AddRow(g, "缓存路径:", _txtKvCachePath);
+        AddRow(g, "Cache-RAM(MiB):", _numCacheRam);
+        AddRow(g, "空闲slot缓存:", _chkNoCacheIdleSlots);
+        AddRow(g, "Token Guard:", _chkTokenGuard);
+        AddRow(g, "输出预留:", _numReservedTokens);
+        AddRow(g, "Prompt头部开销:", _numPromptOverhead);
+        AddRow(g, "request-dump:", _chkRequestDump);
         var autoPreFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         foreach (var c in _autoPreChecks) autoPreFlow.Controls.Add(c);
-        AddRow(gRes, "自动强占:", autoPreFlow, null);
+        AddRow(g, "自动强占:", autoPreFlow);
         var snapFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         foreach (var c in _snapChecks) snapFlow.Controls.Add(c);
-        AddRow(gRes, "自动快照:", snapFlow, null);
-        AddRow(gRes, "休眠(min):", _numIdleMin, null);
+        AddRow(g, "自动快照:", snapFlow);
+        AddRow(g, "休眠(min):", _numIdleMin);
+    }
 
-        // ▍高级选项 · 流式/续接/恢复
-        var gAdv = NewGroup("▍高级选项 · 流式/续接/恢复");
+    /// <summary>▍高级选项 · 流式/续接/恢复（11 项）。</summary>
+    private void BuildAdvancedGroup(Control root)
+    {
+        var g = NewGroup(root, "▍高级选项 · 流式/续接/恢复");
         _cmbLogQueuePolicy.Items.Add("drop-newest（保留历史，丢新入队）");
         _cmbLogQueuePolicy.Items.Add("drop-oldest（丢最旧，保留新消息）");
-        AddRow(gAdv, "log-queue-full:", _cmbLogQueuePolicy, null);
-        AddRow(gAdv, "tb(batch线程):", _numBatchThreads, null);
-        AddRow(gAdv, "附加:", _txtExtra, null);
-        AddRow(gAdv, "P核掩码:", _txtPcoreMask, null);
-        AddRow(gAdv, "流式:", _chkForceStream, null);
-        AddRow(gAdv, "输出续接:", _chkContinuation, null);
-        AddRow(gAdv, "最大续接:", _numMaxContinuations, null);
-        AddRow(gAdv, "续接超时:", _numContTimeout, null);
-        AddRow(gAdv, "崩溃恢复:", _chkCrashRecover, null);
-        AddRow(gAdv, "最大重启:", _numMaxRestarts, null);
+        AddRow(g, "log-queue-full:", _cmbLogQueuePolicy);
+        AddRow(g, "tb(batch线程):", _numBatchThreads);
+        AddRow(g, "附加:", _txtExtra);
+        AddRow(g, "P核掩码:", _txtPcoreMask);
+        AddRow(g, "流式:", _chkForceStream);
+        AddRow(g, "输出续接:", _chkContinuation);
+        AddRow(g, "最大续接:", _numMaxContinuations);
+        AddRow(g, "续接超时:", _numContTimeout);
+        AddRow(g, "崩溃恢复:", _chkCrashRecover);
+        AddRow(g, "最大重启:", _numMaxRestarts);
         // 模式行：标签 + CheckBox 同行（AutoSize 让 CheckBox 紧跟标签，不再撑满整行）
         var chkAutoRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         chkAutoRow.Controls.Add(_chkAuto);
-        AddRow(gAdv, "模式:", chkAutoRow, null);
+        AddRow(g, "模式:", chkAutoRow);
+    }
 
-        // 中文注释：已有 23 条逐字保留 + 补 11 条核心参数（v2.17）
+    /// <summary>36 项参数中文 tooltip 注释（34 静态控件；自动强占/快照动态 checkbox 由 MakeAffinityCheck 按规则 Tooltip 设置）。</summary>
+    private void BuildTooltips()
+    {
         _tooltip.SetToolTip(_txtExtra, "原样拼入命令行；含空格的路径需加引号");
         _tooltip.SetToolTip(_chkForceStream, "把非流式请求改写为 stream=true。仅适用于能解析 SSE 的客户端。");
         _tooltip.SetToolTip(_txtKvCachePath, "KV Cache 保存目录（--slot-save-path）；多槽时驱逐自动 save，重绑定自动 restore。留空 = 禁用。");
@@ -594,8 +617,6 @@ public partial class MainForm : Form
         _tooltip.SetToolTip(_numIdleMin, "智能模式：空闲 N 分钟后自动休眠释放显存，请求自动唤醒。");
         _tooltip.SetToolTip(_txtPcoreMask, "P 核 CPU 亲和掩码（--p-core-mask，十六进制）；留空 = 不限制。");
         _tooltip.SetToolTip(_chkAuto, "智能按需模式：空闲休眠 + 请求唤醒 + 端口复用，推荐开启。");
-
-        return root;
     }
 
 }
