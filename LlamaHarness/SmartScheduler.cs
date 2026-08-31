@@ -894,13 +894,30 @@ public sealed class SmartScheduler : IDisposable
         return (routedSlot, routedKey, didRestore);
     }
 
-    /// <summary>转发阶段：构造后端请求（过滤逐跳头）→ 连接异常 500ms 重试一次 → 响应管道 → 400 上下文超限自愈 → 崩溃恢复 / 断点快照清理 → 客户端断开兜底。</summary>
+    /// <summary>转发阶段：构造后端请求（过滤逐跳头）→ 连接异常 500ms 重试一次 → 400 上下文超限自愈 → 响应管道（崩溃恢复/断点快照清理/客户端断开兜底）。</summary>
     private async Task SendAndPipeAsync(
         HttpListenerContext ctx, Uri uri, string path, HttpListenerRequest req,
         byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root)
     {
         using var msg = RequestProcessor.BuildBackendRequest(req, uri, bodyBytes);
 
+        HttpResponseMessage resp = await TryConnectWithRetryAsync(msg);
+        using (resp)
+        {
+            var outResp = ctx.Response;
+
+            // 400 上下文超限自愈（激进裁剪 + KV 废弃 + 重发）；已处理则返回
+            if (await TryRecoverContextOverflowAsync(resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey))
+                return;
+
+            // 响应管道 + 崩溃恢复 + 断点快照清理 + 存档（含客户端断开兜底）
+            await PumpResponseAsync(resp, outResp, uri, path, finalBody, effStreaming, routedSlot, routedKey);
+        }
+    }
+
+    /// <summary>连接异常 500ms 重试一次：后端刚重启/连接被重置时稍等重发（SendAndPipeAsync 子流程①）。</summary>
+    private async Task<HttpResponseMessage> TryConnectWithRetryAsync(HttpRequestMessage msg)
+    {
         HttpResponseMessage resp;
         try
         {
@@ -913,184 +930,197 @@ public sealed class SmartScheduler : IDisposable
             await Task.Delay(500);
             resp = await _hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
         }
-        using (resp)
-        {
-            var outResp = ctx.Response;
+        return resp;
+    }
 
-            // ── 400 上下文超限自愈（临时应急）：llama.cpp 返回 400 "exceeds context size" → 激进裁剪 + 废弃 KV + 重发 ──
-            // 前置 TokenGuard 是快速预估（BuildMessagesText 不含 tools/Jinja 模板），ReservedPromptOverhead 预留不足时仍可能击穿。
-            // 此分支是最后一道防线：捕获 400 → 激进裁剪 → 废弃 slot KV → 重新提交。
-            if (resp.StatusCode == System.Net.HttpStatusCode.BadRequest && RequestProcessor.IsChatCompletions(path) && root != null && finalBody != null)
+    /// <summary>400 上下文超限自愈（SendAndPipeAsync 子流程②）：读取 errBody → TokenGuard 激进裁剪 → KV 废弃 → 重发。
+    /// 前置 TokenGuard 是快速预估（BuildMessagesText 不含 tools/Jinja 模板），ReservedPromptOverhead 预留不足时仍可能击穿；
+    /// 此分支是最后一道防线。返回 true = 已处理（调用方应 return）；false = 未触发自愈（继续正常流程）。</summary>
+    private async Task<bool> TryRecoverContextOverflowAsync(
+        HttpResponseMessage resp, HttpListenerResponse outResp, HttpListenerRequest req, Uri uri,
+        string path, JsonObject? root, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey)
+    {
+        if (resp.StatusCode != System.Net.HttpStatusCode.BadRequest || !RequestProcessor.IsChatCompletions(path) || root == null || finalBody == null)
+            return false;
+        if (resp.StatusCode == System.Net.HttpStatusCode.BadRequest && RequestProcessor.IsChatCompletions(path) && root != null && finalBody != null)
+        {
+            string errBody = "";
+            try { errBody = await resp.Content.ReadAsStringAsync(); } catch { /* 读取失败按非超限处理 */ }
+            if (errBody.Contains("exceeds the available context size", StringComparison.OrdinalIgnoreCase))
             {
-                string errBody = "";
-                try { errBody = await resp.Content.ReadAsStringAsync(); } catch { /* 读取失败按非超限处理 */ }
-                if (errBody.Contains("exceeds the available context size", StringComparison.OrdinalIgnoreCase))
+                Log?.Invoke("[EDGE-CASE-CONTEXT-OVERFLOW-400] llama.cpp 上下文超限 400，触发自愈（aggressive trim + KV 废弃 + 重发）");
+                Log?.Invoke("[TOKEN-GUARD-FATAL] real prompt overflow，aggressive trim + KV 废弃 + 重发");
+                // 1. 激进裁剪：预算收紧 50%（比正常预算更严格）
+                int tightBudget = Math.Max(AppConfig.MinInputBudgetTokens, _cfg.GetInputBudget() / 2);
+                var (ok, modified, note) = await TokenGuard.GuardAsync(root, _hc, _backendPort, tightBudget);
+                if (!ok)
                 {
-                    Log?.Invoke("[EDGE-CASE-CONTEXT-OVERFLOW-400] llama.cpp 上下文超限 400，触发自愈（aggressive trim + KV 废弃 + 重发）");
-                    Log?.Invoke("[TOKEN-GUARD-FATAL] real prompt overflow，aggressive trim + KV 废弃 + 重发");
-                    // 1. 激进裁剪：预算收紧 50%（比正常预算更严格）
-                    int tightBudget = Math.Max(AppConfig.MinInputBudgetTokens, _cfg.GetInputBudget() / 2);
-                    var (ok, modified, note) = await TokenGuard.GuardAsync(root, _hc, _backendPort, tightBudget);
-                    if (!ok)
-                    {
-                        // 裁剪失败：原样返回 400
-                        outResp.StatusCode = 400;
-                        outResp.ContentType = "application/json";
-                        var bytes = System.Text.Encoding.UTF8.GetBytes(errBody);
-                        outResp.ContentLength64 = bytes.Length;
-                        await outResp.OutputStream.WriteAsync(bytes);
-                        return;
-                    }
-                    // 2. 废弃 slot KV 缓存（旧 saved_n 残留与新裁剪后 prompt 不匹配，强制全量 prefill）
-                    if (routedKey != null && _kvCache != null)
-                    {
-                        try
-                        {
-                            _kvCache.DeleteCache(routedKey);
-                            lock (_kvStateGate) _prefixHashes.Remove(routedKey);
-                            Log?.Invoke($"[TOKEN-GUARD-FATAL] KV 缓存废弃：{routedKey}（强制全量 prefill）");
-                        }
-                        catch { /* 清理失败不影响重发 */ }
-                    }
-                    // 3. 重新提交请求（用裁剪后的 root 序列化）
-                    string newBody = modified ? root.ToJsonString() : finalBody;
-                    var newMsg = RequestProcessor.BuildBackendRequest(req, uri, System.Text.Encoding.UTF8.GetBytes(newBody));
-                    HttpResponseMessage retryResp;
+                    // 裁剪失败：原样返回 400
+                    outResp.StatusCode = 400;
+                    outResp.ContentType = "application/json";
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(errBody);
+                    outResp.ContentLength64 = bytes.Length;
+                    await outResp.OutputStream.WriteAsync(bytes);
+                    return true;
+                }
+                // 2. 废弃 slot KV 缓存（旧 saved_n 残留与新裁剪后 prompt 不匹配，强制全量 prefill）
+                if (routedKey != null && _kvCache != null)
+                {
                     try
                     {
-                        retryResp = await _hc.SendAsync(newMsg, HttpCompletionOption.ResponseHeadersRead);
+                        _kvCache.DeleteCache(routedKey);
+                        lock (_kvStateGate) _prefixHashes.Remove(routedKey);
+                        Log?.Invoke($"[TOKEN-GUARD-FATAL] KV 缓存废弃：{routedKey}（强制全量 prefill）");
                     }
-                    catch (HttpRequestException)
+                    catch { /* 清理失败不影响重发 */ }
+                }
+                // 3. 重新提交请求（用裁剪后的 root 序列化）
+                string newBody = modified ? root.ToJsonString() : finalBody;
+                var newMsg = RequestProcessor.BuildBackendRequest(req, uri, System.Text.Encoding.UTF8.GetBytes(newBody));
+                HttpResponseMessage retryResp;
+                try
+                {
+                    retryResp = await _hc.SendAsync(newMsg, HttpCompletionOption.ResponseHeadersRead);
+                }
+                catch (HttpRequestException)
+                {
+                    outResp.StatusCode = 502;
+                    outResp.ContentType = "application/json";
+                    await outResp.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"error\":\"400 自愈重发连接失败\"}"));
+                    return true;
+                }
+                using (retryResp)
+                {
+                    outResp.StatusCode = (int)retryResp.StatusCode;
+                    var ct2 = retryResp.Content.Headers.ContentType?.ToString();
+                    outResp.ContentType = string.IsNullOrEmpty(ct2) ? "application/octet-stream" : ct2!;
+                    if (retryResp.IsSuccessStatusCode)
                     {
-                        outResp.StatusCode = 502;
+                        // 重发成功：走正常响应管道
+                        (bool completed, string accumulated) = await PipeResponseAsync(
+                            retryResp, outResp, uri, path, newBody, effStreaming, routedSlot, routedKey);
+                        Log?.Invoke($"[TOKEN-GUARD-FATAL] 400 自愈重发{(completed ? "成功" : "失败")}");
+                        return true;
+                    }
+                    else
+                    {
+                        // 重发仍失败：返回错误
+                        string retryErr = "";
+                        try { retryErr = await retryResp.Content.ReadAsStringAsync(); } catch { }
                         outResp.ContentType = "application/json";
-                        await outResp.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"error\":\"400 自愈重发连接失败\"}"));
-                        return;
+                        var bytes2 = System.Text.Encoding.UTF8.GetBytes(retryErr);
+                        outResp.ContentLength64 = bytes2.Length;
+                        await outResp.OutputStream.WriteAsync(bytes2);
+                        Log?.Invoke($"[TOKEN-GUARD-FATAL] 400 自愈重发仍失败（{(int)retryResp.StatusCode}）");
+                        return true;
                     }
-                    using (retryResp)
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>响应管道编排（SendAndPipeAsync 子流程③）：设置响应头 → PipeResponseAsync（输出续接/崩溃识别）
+    /// → 崩溃恢复（keep-alive 保活 + KV 快照接续/全量重放）→ 续接成功清理过期断点快照
+    /// → 首请求存档 + 每轮条件式后台 save；含客户端断开兜底（catch）与响应关闭（finally）。</summary>
+    private async Task PumpResponseAsync(
+        HttpResponseMessage resp, HttpListenerResponse outResp, Uri uri, string path,
+        string? finalBody, bool effStreaming, int? routedSlot, string? routedKey)
+    {
+        outResp.StatusCode = (int)resp.StatusCode;
+        var ct = resp.Content.Headers.ContentType?.ToString();
+        outResp.ContentType = string.IsNullOrEmpty(ct) ? "application/octet-stream" : ct!;
+        try
+        {
+            (bool completed, string accumulated) = await PipeResponseAsync(
+                resp, outResp, uri, path, finalBody, effStreaming, routedSlot, routedKey);
+
+            // 崩溃恢复：流中断/5xx bad_alloc → keep-alive 保活 + KV 快照接续 / 进程重启全量重放
+            if (!completed && _cfg.CrashRecoveryEnabled && effStreaming && finalBody != null)
+            {
+                var log2 = (string s) => Log?.Invoke(s);
+                await TryCrashRecoverAsync(uri, outResp, finalBody, accumulated, routedSlot, routedKey, log2);
+            }
+
+            // §6.3：续接成功 → 清理过期断点快照（槽活 KV 已领先断点，旧快照 restore 会回退状态）；失败则保留供下次 rebinding/崩溃恢复 restore
+            if (completed && routedKey != null)
+            {
+                bool wasPending;
+                lock (_kvStateGate) wasPending = _truncPending.Remove(routedKey);
+                if (wasPending)
+                {
+                    try
                     {
-                        outResp.StatusCode = (int)retryResp.StatusCode;
-                        var ct2 = retryResp.Content.Headers.ContentType?.ToString();
-                        outResp.ContentType = string.IsNullOrEmpty(ct2) ? "application/octet-stream" : ct2!;
-                        if (retryResp.IsSuccessStatusCode)
-                        {
-                            // 重发成功：走正常响应管道
-                            (bool completed, string accumulated) = await PipeResponseAsync(
-                                retryResp, outResp, uri, path, newBody, effStreaming, routedSlot, routedKey);
-                            Log?.Invoke($"[TOKEN-GUARD-FATAL] 400 自愈重发{(completed ? "成功" : "失败")}");
-                            return;
-                        }
-                        else
-                        {
-                            // 重发仍失败：返回错误
-                            string retryErr = "";
-                            try { retryErr = await retryResp.Content.ReadAsStringAsync(); } catch { }
-                            outResp.ContentType = "application/json";
-                            var bytes2 = System.Text.Encoding.UTF8.GetBytes(retryErr);
-                            outResp.ContentLength64 = bytes2.Length;
-                            await outResp.OutputStream.WriteAsync(bytes2);
-                            Log?.Invoke($"[TOKEN-GUARD-FATAL] 400 自愈重发仍失败（{(int)retryResp.StatusCode}）");
-                            return;
-                        }
+                        _kvCache?.DeleteCache(routedKey);
+                        Log?.Invoke($"[KV-CLEANUP] 续接成功，清理过期断点快照：{routedKey}");
+                    }
+                    catch { /* 清理失败不影响主流程 */ }
+                }
+            }
+
+            // 1.1 首请求存档：自动快照 key 首次真实 prefill 完成后立即落盘快照（每唤醒周期一次），
+            // 防进程崩溃未休眠时磁盘快照停留在旧状态（缺最新 KV）。失败不阻塞主流程，下请求重试。
+            if (completed && routedKey != null && _kvCache != null && routedSlot is int saveSlot
+                && IsAutoSnapshotKey(routedKey))
+            {
+                bool alreadySaved;
+                lock (_kvStateGate) alreadySaved = _savedKeysThisRun.Contains(routedKey);
+                if (!alreadySaved)
+                {
+                    var swSave = System.Diagnostics.Stopwatch.StartNew();
+                    try
+                    {
+                        await _kvCache.SaveAsync(saveSlot, routedKey);
+                        lock (_kvStateGate) { _savedKeysThisRun.Add(routedKey); _freshSnapshotKeys.Add(routedKey); }
+                        Log?.Invoke($"[KV-SAVE] 首请求存档：{routedKey} → slot{saveSlot}（{swSave.Elapsed.TotalSeconds:F1}s）");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log?.Invoke($"[EDGE-CASE-SAVE-FAILED] {routedKey}：首请求存档失败（{ex.Message}），废弃旧快照，下次请求重试。");
+                        _kvCache.DeleteCache(routedKey);
                     }
                 }
             }
 
-            outResp.StatusCode = (int)resp.StatusCode;
-            var ct = resp.Content.Headers.ContentType?.ToString();
-            outResp.ContentType = string.IsNullOrEmpty(ct) ? "application/octet-stream" : ct!;
-            try
+            // 1.2 每轮条件式后台 save（RAMDisk 快照全权接管）：快照非新鲜（上一轮后 KV 有增量）→ 异步后台 save，
+            // 不阻塞响应返回（零额外延迟）；成功 → 标记新鲜；失败 → [EDGE-CASE-SAVE-FAILED] + 废弃快照（下轮自动重试）。
+            // 并发安全：KvCacheManager._inflightSaves 按 key 去重，与驱逐前/休眠前同步 save 共享在途任务。
+            if (completed && routedKey != null && _kvCache != null && routedSlot is int bgSaveSlot
+                && IsAutoSnapshotKey(routedKey))
             {
-                (bool completed, string accumulated) = await PipeResponseAsync(
-                    resp, outResp, uri, path, finalBody, effStreaming, routedSlot, routedKey);
-
-                // 崩溃恢复：流中断/5xx bad_alloc → keep-alive 保活 + KV 快照接续 / 进程重启全量重放
-                if (!completed && _cfg.CrashRecoveryEnabled && effStreaming && finalBody != null)
+                bool fresh;
+                lock (_kvStateGate) fresh = _freshSnapshotKeys.Contains(routedKey);
+                if (!fresh)
                 {
-                    var log2 = (string s) => Log?.Invoke(s);
-                    await TryCrashRecoverAsync(uri, outResp, finalBody, accumulated, routedSlot, routedKey, log2);
-                }
-
-                // §6.3：续接成功 → 清理过期断点快照（槽活 KV 已领先断点，旧快照 restore 会回退状态）；失败则保留供下次 rebinding/崩溃恢复 restore
-                if (completed && routedKey != null)
-                {
-                    bool wasPending;
-                    lock (_kvStateGate) wasPending = _truncPending.Remove(routedKey);
-                    if (wasPending)
+                    var bgKey = routedKey;
+                    var bgSlot = bgSaveSlot;
+                    _ = Task.Run(async () =>
                     {
                         try
                         {
-                            _kvCache?.DeleteCache(routedKey);
-                            Log?.Invoke($"[KV-CLEANUP] 续接成功，清理过期断点快照：{routedKey}");
-                        }
-                        catch { /* 清理失败不影响主流程 */ }
-                    }
-                }
-
-                // 1.1 首请求存档：自动快照 key 首次真实 prefill 完成后立即落盘快照（每唤醒周期一次），
-                // 防进程崩溃未休眠时磁盘快照停留在旧状态（缺最新 KV）。失败不阻塞主流程，下请求重试。
-                if (completed && routedKey != null && _kvCache != null && routedSlot is int saveSlot
-                    && IsAutoSnapshotKey(routedKey))
-                {
-                    bool alreadySaved;
-                    lock (_kvStateGate) alreadySaved = _savedKeysThisRun.Contains(routedKey);
-                    if (!alreadySaved)
-                    {
-                        var swSave = System.Diagnostics.Stopwatch.StartNew();
-                        try
-                        {
-                            await _kvCache.SaveAsync(saveSlot, routedKey);
-                            lock (_kvStateGate) { _savedKeysThisRun.Add(routedKey); _freshSnapshotKeys.Add(routedKey); }
-                            Log?.Invoke($"[KV-SAVE] 首请求存档：{routedKey} → slot{saveSlot}（{swSave.Elapsed.TotalSeconds:F1}s）");
+                            await _kvCache.SaveAsync(bgSlot, bgKey);
+                            lock (_kvStateGate) _freshSnapshotKeys.Add(bgKey);
+                            Log?.Invoke($"[KV-SAVE] 每轮后台快照：{bgKey} → slot{bgSlot}");
                         }
                         catch (Exception ex)
                         {
-                            Log?.Invoke($"[EDGE-CASE-SAVE-FAILED] {routedKey}：首请求存档失败（{ex.Message}），废弃旧快照，下次请求重试。");
-                            _kvCache.DeleteCache(routedKey);
+                            Log?.Invoke($"[EDGE-CASE-SAVE-FAILED] {bgKey}：每轮后台快照失败（{ex.Message}），废弃旧快照。");
+                            _kvCache.DeleteCache(bgKey);
                         }
-                    }
-                }
-
-                // 1.2 每轮条件式后台 save（RAMDisk 快照全权接管）：快照非新鲜（上一轮后 KV 有增量）→ 异步后台 save，
-                // 不阻塞响应返回（零额外延迟）；成功 → 标记新鲜；失败 → [EDGE-CASE-SAVE-FAILED] + 废弃快照（下轮自动重试）。
-                // 并发安全：KvCacheManager._inflightSaves 按 key 去重，与驱逐前/休眠前同步 save 共享在途任务。
-                if (completed && routedKey != null && _kvCache != null && routedSlot is int bgSaveSlot
-                    && IsAutoSnapshotKey(routedKey))
-                {
-                    bool fresh;
-                    lock (_kvStateGate) fresh = _freshSnapshotKeys.Contains(routedKey);
-                    if (!fresh)
-                    {
-                        var bgKey = routedKey;
-                        var bgSlot = bgSaveSlot;
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await _kvCache.SaveAsync(bgSlot, bgKey);
-                                lock (_kvStateGate) _freshSnapshotKeys.Add(bgKey);
-                                Log?.Invoke($"[KV-SAVE] 每轮后台快照：{bgKey} → slot{bgSlot}");
-                            }
-                            catch (Exception ex)
-                            {
-                                Log?.Invoke($"[EDGE-CASE-SAVE-FAILED] {bgKey}：每轮后台快照失败（{ex.Message}），废弃旧快照。");
-                                _kvCache.DeleteCache(bgKey);
-                            }
-                        });
-                    }
+                    });
                 }
             }
-            catch (Exception)
-            {
-                // 客户端断开/写入失败：方法退出时 dispose resp 关闭后端连接，
-                // llama-server 检测到断开会取消任务并保留部分槽位 KV（f_keep），释放 GPU。
-                // 多 agent 模式下这是预期行为（agent 超时/重试），非致命错误。
-                Log?.Invoke("客户端断开，已中止本次生成（多 agent 下属正常重试）。");
-            }
-            finally
-            {
-                outResp.Close();
-            }
+        }
+        catch (Exception)
+        {
+            // 客户端断开/写入失败：方法退出时 dispose resp 关闭后端连接，
+            // llama-server 检测到断开会取消任务并保留部分槽位 KV（f_keep），释放 GPU。
+            // 多 agent 模式下这是预期行为（agent 超时/重试），非致命错误。
+            Log?.Invoke("客户端断开，已中止本次生成（多 agent 下属正常重试）。");
+        }
+        finally
+        {
+            outResp.Close();
         }
     }
 
@@ -1531,7 +1561,6 @@ public sealed class SmartScheduler : IDisposable
             Log?.Invoke("警告：检测到非流式推理请求。llama-server 会阻塞整个生成后才返回，客户端读超时可能触发断开→重试全量重新预填。" +
                         "建议：Agent 侧启用流式（stream=true）或加大请求超时；也可在启动器开启「强制流式」。");
     }
-
 
     // ==================== 闲置休眠（15 分钟无请求自动释放） ====================
 
