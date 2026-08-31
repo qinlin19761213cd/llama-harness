@@ -40,6 +40,8 @@ public sealed class SlotAffinity
     /// <summary>Tool 链锁定集合（§4.5）：本层执行过 SetPreemptive(true) 的 key。
     /// 驱逐优先级：Tool 链锁定 > 手动/自动强占（Tool 是瞬态的，循环结束自动解锁）。</summary>
     private readonly HashSet<string> _toolLockedKeys = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>AH-7：未知请求轮转分配计数器（Interlocked 原子递增，替代 Random——并发下每个未知请求分到不同槽，避免同槽碰撞）。</summary>
+    private int _nextRandomSlot;
 
     public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null)
     {
@@ -60,6 +62,9 @@ public sealed class SlotAffinity
     /// <summary>按配置规则（affinity_rules）派生应用显示名。</summary>
     public string AppNameOf(string key) => AffinityRuleMatcher.AppNameOf(key, _rules);
 
+    /// <summary>AH-7：轮转分配下一个槽位（Interlocked 原子，线程安全；并发下分配唯一槽，杜绝 Random 同槽碰撞）。</summary>
+    private int NextRoundRobinSlot() => (int)((uint)Interlocked.Increment(ref _nextRandomSlot) % (uint)_slotCount);
+
     /// <summary>
     /// 获取请求的槽位：已绑定 → 其槽位（刷新活跃时间）；新 Key → 空闲槽或 LRU 驱逐。
     /// 全被强占占满 → 排队等待（上限 _maxWaitSeconds），超时降级随机槽。
@@ -73,7 +78,7 @@ public sealed class SlotAffinity
     {
         var key = GetAffinityKey(headers);
         if (string.IsNullOrEmpty(key))
-            return (Random.Shared.Next(_slotCount), null, false, null, -1, false);
+            return (NextRoundRobinSlot(), null, false, null, -1, false);
 
         // §4.2：应用类型在自动强占集合 → 强制冻结（新绑定创建时 + 已有绑定每次访问）
         bool autoPre = autoPreemptive != null && autoPreemptive.Any(p => !string.IsNullOrEmpty(p) && key.StartsWith(p, StringComparison.OrdinalIgnoreCase));
@@ -115,8 +120,8 @@ public sealed class SlotAffinity
             }
         }
 
-        // 超时降级：随机槽，不建绑定
-        return (Random.Shared.Next(_slotCount), null, false, null, -1, false);
+        // 超时降级：轮转槽，不建绑定（AH-7：与未知请求一致用轮转，避免 Random 同槽碰撞）
+        return (NextRoundRobinSlot(), null, false, null, -1, false);
     }
 
     /// <summary>锁内原子分配：空闲槽 → LRU 驱逐非强占 → 建绑定 + 持久化。
@@ -329,7 +334,7 @@ public sealed class SlotAffinity
         }
     }
 
-    /// <summary>持久化绑定表（含应用名/强占/KV缓存配置）。</summary>
+    /// <summary>持久化绑定表（含应用名/强占/KV缓存配置）。AH-8：原子写（tmp + move），中断不产生半写文件。</summary>
     private void Save()
     {
         try
@@ -352,7 +357,9 @@ public sealed class SlotAffinity
                 ["slotCount"] = _slotCount,
                 ["bindings"] = bindings
             };
-            File.WriteAllText(BindingsPath, obj.ToJsonString());
+            var tmp = BindingsPath + ".tmp";
+            File.WriteAllText(tmp, obj.ToJsonString());
+            File.Move(tmp, BindingsPath, overwrite: true);
         }
         catch
         {

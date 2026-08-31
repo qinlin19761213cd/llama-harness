@@ -264,9 +264,22 @@ public sealed class KvCacheManager
 
     /// <summary>
     /// 清空缓存：删除缓存目录下所有 *.bin + erase 全部槽位。
+    /// AH-10：先等待在途 save 完成（后台每轮 save 与清空并发时，避免删除后文件被重写、索引"复活"）。
     /// </summary>
     public async Task<int> ClearAllAsync()
     {
+        // AH-10：等待在途 save 结束（最长 ~5s），再执行删除
+        for (int i = 0; i < 50; i++)
+        {
+            Task[] inflight;
+            lock (_gate)
+            {
+                if (_inflightSaves.Count == 0) break;
+                inflight = _inflightSaves.Values.ToArray();
+            }
+            try { await Task.WhenAll(inflight); } catch { /* save 失败不影响清空 */ }
+        }
+
         int deleted = 0;
         try
         {
@@ -286,23 +299,23 @@ public sealed class KvCacheManager
             try { await EraseAsync(i); } catch { /* 忽略 */ }
         }
 
-        // O-17：_index 变更统一在 lock(_gate) 内（与 RecordSave/Snapshot/LoadIndex 一致）
+        // O-17：_index 变更统一在 lock(_gate) 内（与 RecordSave/Snapshot/LoadIndex 一致）；索引写盘移锁外（AH-13）
         lock (_gate)
         {
             _index.Clear();
-            SaveIndex();
         }
+        SaveIndex();
         return deleted;
     }
 
-    /// <summary>记录 save 成功（更新索引）。</summary>
+    /// <summary>记录 save 成功（更新索引）。AH-13：锁内只更新内存索引，索引写盘移锁外（不阻塞并发 save/restore）。</summary>
     private void RecordSave(string key, int slot, int nTokens, long sizeBytes)
     {
         lock (_gate)
         {
             _index[key] = new CacheEntry { Slot = slot, SavedAt = DateTime.Now, NTokens = nTokens, SizeBytes = sizeBytes };
-            SaveIndex();
         }
+        SaveIndex();
     }
 
     /// <summary>缓存索引快照（UI 展示用）。</summary>

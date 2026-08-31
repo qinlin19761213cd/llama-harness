@@ -172,11 +172,21 @@ public sealed class RestoreStats
         }
     }
 
-    /// <summary>持久化（原子写：临时文件 + rename）。休眠/退出时显式调用；无新数据时跳过。</summary>
+    /// <summary>持久化（原子写：临时文件 + rename）。休眠/退出时显式调用；无新数据时跳过。AH-13：锁内只判定+快照，磁盘 IO 锁外执行（不再阻塞统计更新）。</summary>
     public void Save()
     {
+        object? payload = null;
         lock (_gate)
-            DoSaveLocked(DateTime.Now);
+        {
+            if (_dirty)
+            {
+                payload = BuildPayload();
+                _dirty = false;
+                _lastSaveAt = DateTime.Now;
+            }
+        }
+        if (payload != null)
+            WritePayloadAtomically(payload);
     }
 
     private static AlertLevel ComputeAlertLevel(double rate)
@@ -184,31 +194,35 @@ public sealed class RestoreStats
         return rate < 0.5 ? AlertLevel.Red : rate < 0.8 ? AlertLevel.Yellow : AlertLevel.None;
     }
 
-    /// <summary>节流自动保存：距上次保存 ≥10s 且有新数据才落盘。</summary>
+    /// <summary>节流自动保存：距上次保存 ≥10s 且有新数据才落盘。AH-13：锁外写盘（同 Save 模式）。</summary>
     private void TryAutoSave()
     {
+        object? payload = null;
         lock (_gate)
         {
             var now = DateTime.Now;
-            if ((now - _lastSaveAt).TotalSeconds >= 10)
-                DoSaveLocked(now);
+            if (_dirty && (now - _lastSaveAt).TotalSeconds >= 10)
+            {
+                payload = BuildPayload();
+                _dirty = false;
+                _lastSaveAt = now;
+            }
         }
+        if (payload != null)
+            WritePayloadAtomically(payload);
     }
 
-    /// <summary>实际写盘（调用方已持 _gate）。失败尽力而为，_dirty 保留供下次重试。</summary>
-    private void DoSaveLocked(DateTime now)
+    /// <summary>原子写盘（tmp + move，锁外调用）。失败尽力而为：_dirty 已置 false，下个周期再补。</summary>
+    private void WritePayloadAtomically(object payload)
     {
         try
         {
-            if (!_dirty) return; // 无新数据
             var dir = Path.GetDirectoryName(_statsPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            var json = JsonSerializer.Serialize(BuildPayload());
+            var json = JsonSerializer.Serialize(payload);
             var tmp = _statsPath + ".tmp";
             File.WriteAllText(tmp, json);
             File.Move(tmp, _statsPath, overwrite: true);
-            _dirty = false;
-            _lastSaveAt = now;
         }
         catch
         {
