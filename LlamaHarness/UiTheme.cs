@@ -17,6 +17,7 @@ public static class UiTheme
     public static readonly Color C_Primary = Color.FromArgb(0xFF, 0xA5, 0x00);   // #FFA500 橙黄强调（大标题/选中页签）
     public static readonly Color C_Title = Color.FromArgb(0xE0, 0xE0, 0xE0);     // #e0e0e0 一级标题
     public static readonly Color C_Aux = Color.FromArgb(0x86, 0x90, 0x9C);       // #86909C 辅助说明
+    public static readonly Color C_DisabledText = Color.FromArgb(0xC0, 0xC0, 0xC0); // #C0C0C0 禁用按钮文字（比白灰一点的浅灰，深色底清晰可见，v2.20）
     public static readonly Color C_Green = Color.FromArgb(0x27, 0xAE, 0x60);     // #27AE60 运行中
     public static readonly Color C_Red = Color.FromArgb(0xE7, 0x4C, 0x3C);       // #E74C3C 已停止/异常
     public static readonly Color C_Warn = Color.FromArgb(0xFF, 0x98, 0x00);      // #FF9800 过渡态（唤醒/休眠）
@@ -75,9 +76,9 @@ public static class UiTheme
     }
 
     /// <summary>创建统一风格侧边栏按钮（#3d3d3d 底白字 + 左侧图标，悬停变亮；图标缺失降级纯文本）。</summary>
-    public static Button MakeBtn(string text, string? iconFile = null, bool enabled = true, int h = 34)
+    public static FlatButton MakeBtn(string text, string? iconFile = null, bool enabled = true, int h = 34)
     {
-        var b = new Button
+        var b = new FlatButton
         {
             Text = text,
             Size = new Size(168, h),
@@ -99,6 +100,44 @@ public static class UiTheme
     }
 
     /// <summary>左侧分组标题（small bold，黑底容器——Control Panel / Configuration / User Manual；宽度与按键一致，由侧边栏网格中列控制）。</summary>
+
+/// <summary>
+/// 支持禁用态自定义文字颜色的扁平按钮（v2.20）：原生 Button 在 Enabled=false 时用系统灰色绘制文字，
+/// 深色背景下偏黑看不清。本类在禁用态自绘——文字用 DisabledForeColor（浅灰），图标灰化，底色保持 C_Btn，
+/// 与启用态白色文字明显区分；启用态完全交给 base 绘制（保持原有 Flat 样式与 hover 反馈）。
+/// </summary>
+public sealed class FlatButton : Button
+{
+    /// <summary>禁用态文字颜色（默认 UiTheme.C_DisabledText = #C0C0C0 浅灰）。</summary>
+    public Color DisabledForeColor { get; set; } = UiTheme.C_DisabledText;
+
+    public FlatButton()
+    {
+        SetStyle(ControlStyles.UserPaint, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs pevent)
+    {
+        if (Enabled) { base.OnPaint(pevent); return; } // 启用态：走原生 Flat 绘制
+
+        var g = pevent.Graphics;
+        g.Clear(BackColor); // 禁用态底色 = 按钮底（不随 hover 变化）
+        var r = ClientRectangle;
+        // 图标 + 文字整体居中（对齐启用态 TextImageRelation.ImageBeforeText 布局）
+        var iconW = Image?.Width ?? 0;
+        var textW = TextRenderer.MeasureText(g, Text, Font).Width;
+        var gap = iconW > 0 ? 6 : 0;
+        var x = (r.Width - iconW - gap - textW) / 2;
+        if (Image != null)
+            ControlPaint.DrawImageDisabled(g, Image, x, (r.Height - Image.Height) / 2, BackColor); // 图标灰化
+        TextRenderer.DrawText(g, Text, Font,
+            new Rectangle(x + iconW + gap, 0, textW + 4, r.Height),
+            DisabledForeColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+    }
+}
+
     public static Label MakeSectionTitle(string text) => new()
     {
         Text = $"  {text}",
