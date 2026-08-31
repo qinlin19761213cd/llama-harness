@@ -93,7 +93,7 @@ public partial class SmartScheduler
     {
         if (resp.StatusCode != System.Net.HttpStatusCode.BadRequest || !RequestProcessor.IsChatCompletions(path) || root == null || finalBody == null)
             return false;
-        if (resp.StatusCode == System.Net.HttpStatusCode.BadRequest && RequestProcessor.IsChatCompletions(path) && root != null && finalBody != null)
+        // 上面 guard 已保证：BadRequest && IsChatCompletions && root/finalBody 非空，直接进入自愈
         {
             string errBody = "";
             try { errBody = await resp.Content.ReadAsStringAsync(); } catch { /* 读取失败按非超限处理 */ }
