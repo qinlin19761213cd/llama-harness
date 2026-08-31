@@ -98,13 +98,15 @@ public sealed class SlotPanelView : UserControl
         if (bindings == null || bindings.Count == 0)
         {
             _gridSlots.Rows.Clear();
-            _setSlotSummary("槽位: 0 绑定");
+            _setSlotSummary("槽位: 无绑定");
             return;
         }
         _gridSlots.Rows.Clear();
         foreach (var (key, app, slot, lastActive, _, _) in bindings)
             _gridSlots.Rows.Add(key, app, $"slot {slot}", lastActive.ToString("HH:mm:ss"));
-        _setSlotSummary($"槽位: {bindings.Count} 绑定");
+        // 右侧状态面板槽位绑定卡片（v2.18）：每槽一行「应用: 槽位: N · 强占: 是/否 · KV缓存: 开/关」
+        _setSlotSummary(string.Join("\n", bindings.Select(b =>
+            $"{b.App ?? b.Key}: 槽位: {b.Slot} · 强占: {(b.Preemptive ? "是" : "否")} · KV缓存: {(b.KvCache ? "开" : "关")}")));
     }
 
     /// <summary>填充槽位管理表格（强占/KV缓存 CheckBox 可编辑）；行 Key = 亲和 Key，Dictionary 索引避免 O(n²) 扫 Tag。</summary>

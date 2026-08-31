@@ -224,11 +224,11 @@ public sealed class MonitorPanelView : UserControl
             _lblResTimestamp.Text = $"上次采集: {DateTime.Now:HH:mm:ss}";
 
             // 右侧状态面板摘要（保持原有行为）
-            _status.SetResSummary($"CPU {cpu:F0}% | 内存 {used:F1}/{total:F1}GB");
-            _status.UpdateRunTime();
-
-            // 崩溃熔断红色告警（与系统资源采集无因果关系，仅借本入口轮询状态）
-            _status.CheckCrashCircuit(CrashRecovery.IsTripped);
+            // 右侧状态面板摘要（v2.18：CPU/内存/显存 三行，与本地监视卡同格式）
+            _status.SetResSummary(
+                $"CPU:  {cpu:F0}%\n" +
+                $"内存: {used:F1}/{total:F1} GB\n" +
+                $"显存: {vram ?? "—（未检测到 nvidia-smi）"}");
         }
         finally
         {

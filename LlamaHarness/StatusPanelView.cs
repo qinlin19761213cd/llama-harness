@@ -1,7 +1,7 @@
 namespace LlamaHarness;
 
 /// <summary>
-/// 右侧状态面板 + 状态机 Controller：服务阶段/模块状态/系统资源/运行时长/Token统计/槽位绑定/Restore/思考模式
+/// 右侧状态面板 + 状态机 Controller：服务阶段/模块状态/系统资源/Token统计/槽位绑定/Restore/思考模式（v2.18 删运行时长卡片，资源/Token/槽位多行化）
 /// 八卡片渲染、ApplyPhase 控件启停状态机、思考模式标签、崩溃熔断红色告警状态。
 /// 自持右侧面板控件；外部操作按钮/参数控件由 MainForm 构建后 BindUi 注入（避免跨类散布控件）。
 /// </summary>
@@ -15,7 +15,6 @@ public sealed class StatusPanelView : UserControl
     private FlowLayoutPanel _inFlightPanel = null!; // 服务阶段卡片内：在途任务明细列表（v2.18，每个任务一行）
     private Label _lblModuleState = null!;  // 模块状态（网关 运行中绿 / 已停止红）
     private Label _lblResSummary = null!;   // 系统资源单行摘要（CPU/内存/显存）
-    private Label _lblRunTime = null!;      // 运行时长（自本次唤醒起）
     private Label _lblTokenSummary = null!; // Token 统计摘要（请求数/速度/命中率）
     private Label _lblSlotSummary = null!;  // 槽位绑定摘要
     private Label _lblRestoreHit = null!;   // Restore 命中率卡片（3.1 可观测）
@@ -91,7 +90,7 @@ public sealed class StatusPanelView : UserControl
                 TextAlign = ContentAlignment.MiddleLeft,
             };
             content.Dock = DockStyle.Fill;
-            content.TextAlign = ContentAlignment.MiddleCenter;
+            content.TextAlign = ContentAlignment.MiddleLeft;
             card.Controls.Add(content);
             card.Controls.Add(lblTitle);
             return card;
@@ -113,19 +112,13 @@ public sealed class StatusPanelView : UserControl
         };
         _lblResSummary = new Label
         {
-            Text = "CPU: — | 内存: —",
+            Text = "CPU: —\n内存: —\n显存: —",
             Font = new Font("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
         };
-        _lblRunTime = new Label
-        {
-            Text = "—",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_Primary,
-        };
         _lblTokenSummary = new Label
         {
-            Text = "请求: 0",
+            Text = "请求: 0\n输入: —\n输出: —",
             Font = new Font("Consolas", 11F),
             ForeColor = UiTheme.C_Primary,
         };
@@ -186,7 +179,6 @@ public sealed class StatusPanelView : UserControl
             statusCard,
             MakeCard("模块状态", _lblModuleState),
             MakeCard("系统资源", _lblResSummary),
-            MakeCard("运行时长", _lblRunTime),
             MakeCard("Token 统计", _lblTokenSummary),
             MakeCard("槽位绑定", _lblSlotSummary),
             MakeCard("Restore 命中率", _lblRestoreHit),
@@ -314,10 +306,6 @@ public sealed class StatusPanelView : UserControl
     /// <summary>系统资源摘要（CPU/内存）→ 右侧面板。</summary>
     public void SetResSummary(string text) => _lblResSummary.Text = text;
 
-    /// <summary>运行时长卡片（自本次唤醒起；非 Running 显示 —）。</summary>
-    public void UpdateRunTime()
-        => _lblRunTime.Text = _wakeTime is DateTime wt ? (DateTime.Now - wt).ToString(@"hh\:mm\:ss") : "—";
-
     /// <summary>Token 统计摘要 → 右侧面板（与统计页汇总同步）。</summary>
     public void SetTokenSummary(string text) => _lblTokenSummary.Text = text;
 
@@ -340,4 +328,5 @@ public sealed class StatusPanelView : UserControl
             ApplyPhase(_scheduler.CurrentPhase);
         }
     }
+
 }

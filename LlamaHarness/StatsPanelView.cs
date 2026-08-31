@@ -175,8 +175,8 @@ public sealed class StatsPanelView : UserControl
         var rounds = _statsParser.GetRounds();
         if (rounds.Count == 0)
         {
-            _lblSummary.Text = "请求: 0";
-            _status.SetTokenSummary("请求: 0");
+            _lblSummary.Text = "请求: 0\n输入: —\n输出: —\n命中: —";
+            _status.SetTokenSummary("请求: 0\n输入: —\n输出: —\n命中: —");
             return;
         }
         double inTok = rounds.Sum(r => r.PromptTokens);
@@ -185,10 +185,10 @@ public sealed class StatsPanelView : UserControl
         double outMs = rounds.Sum(r => r.EvalMs);
         long acc = rounds.Where(r => r.HasDraft).Sum(r => r.DraftAccepted);
         long gen = rounds.Where(r => r.HasDraft).Sum(r => r.DraftGenerated);
-        string summary = $"请求: {rounds.Count} | " +
-            $"输入: {(long)inTok} @ {(inMs > 0 ? inTok / (inMs / 1000.0) : 0):F1} t/s | " +
-            $"输出: {(long)outTok} @ {(outMs > 0 ? outTok / (outMs / 1000.0) : 0):F1} t/s | " +
-            (gen > 0 ? $"命中: {acc}/{gen}" : "");
+        string summary = $"请求: {rounds.Count}\n" +
+            $"输入: {(long)inTok} @ {(inMs > 0 ? inTok / (inMs / 1000.0) : 0):F1} t/s\n" +
+            $"输出: {(long)outTok} @ {(outMs > 0 ? outTok / (outMs / 1000.0) : 0):F1} t/s\n" +
+            $"命中: {(gen > 0 ? $"{acc}/{gen}" : "—")}";
         _lblSummary.Text = summary;
         _status.SetTokenSummary(summary);
     }
