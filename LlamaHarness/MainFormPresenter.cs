@@ -33,6 +33,7 @@ public sealed class MainFormPresenter
     {
         _scheduler.Log += line => { _view.AppendLog(line); _stats.FeedLine(line); };
         _scheduler.StatusChanged += text => _view.InvokeOnUi(() => _status.SetStatusText(text));
+        _scheduler.InFlightChanged += () => _view.InvokeOnUi(_status.RefreshInFlightTasks); // 在途任务明细（服务阶段卡片）
         _scheduler.PhaseChanged += phase =>
         {
             // C-007：统计重置由调度器状态机驱动（Waking 时自动触发）

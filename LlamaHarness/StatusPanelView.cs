@@ -12,6 +12,7 @@ public sealed class StatusPanelView : UserControl
     private readonly Action<string> _appendLog;
 
     private Label _lblStatus = null!;       // 服务阶段卡片：调度器状态文本（运行中 · N个在途任务…）
+    private FlowLayoutPanel _inFlightPanel = null!; // 服务阶段卡片内：在途任务明细列表（v2.18，每个任务一行）
     private Label _lblModuleState = null!;  // 模块状态（网关 运行中绿 / 已停止红）
     private Label _lblResSummary = null!;   // 系统资源单行摘要（CPU/内存/显存）
     private Label _lblRunTime = null!;      // 运行时长（自本次唤醒起）
@@ -147,9 +148,42 @@ public sealed class StatusPanelView : UserControl
             ForeColor = Color.Silver,
         };
 
+        // 服务阶段卡片（v2.18 多行化）：标题 + 状态文本 + 在途任务明细列表（与 MakeCard 单 Label 卡片区分）
+        var statusCard = new Panel
+        {
+            BackColor = UiTheme.C_Card,
+            Padding = new Padding(12),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        var statusTitle = new Label
+        {
+            Text = "服务阶段",
+            Dock = DockStyle.Top,
+            Height = 26,
+            ForeColor = UiTheme.C_Title,
+            Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        _inFlightPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = Color.Transparent,
+            Margin = new Padding(0, 2, 0, 0),
+        };
+        _lblStatus.Dock = DockStyle.Top;
+        _lblStatus.TextAlign = ContentAlignment.MiddleLeft;
+        statusCard.Controls.Add(_inFlightPanel); // 后加的 Dock=Top 排上：Title → 状态文本 → 明细
+        statusCard.Controls.Add(_lblStatus);
+        statusCard.Controls.Add(statusTitle);
+
         var cards = new[]
         {
-            MakeCard("服务阶段", _lblStatus),
+            statusCard,
             MakeCard("模块状态", _lblModuleState),
             MakeCard("系统资源", _lblResSummary),
             MakeCard("运行时长", _lblRunTime),
@@ -216,6 +250,24 @@ public sealed class StatusPanelView : UserControl
 
     /// <summary>调度器状态文本（在途任务等）覆盖服务阶段卡片文本（不改色）。</summary>
     public void SetStatusText(string text) => _lblStatus.Text = text;
+
+    /// <summary>刷新服务阶段卡片在途任务明细（InFlightChanged 事件驱动，UI 线程）：每个在途任务一行「应用 · 方法 路径」。</summary>
+    public void RefreshInFlightTasks()
+    {
+        _inFlightPanel.Controls.Clear();
+        foreach (var t in _scheduler.GetInFlightTasks())
+        {
+            var lbl = new Label
+            {
+                AutoSize = true,
+                Font = new Font("Consolas", 8F),
+                ForeColor = UiTheme.C_Aux,
+                Margin = new Padding(0, 1, 0, 1),
+                Text = $"• {(t.App ?? "未知")} · {t.Method} {t.Path}",
+            };
+            _inFlightPanel.Controls.Add(lbl);
+        }
+    }
 
     /// <summary>更新思考模式标签文本和颜色（四档：极速/轻度/中度/深度）。</summary>
     public void UpdateThinkingLabel(SmartScheduler.ThinkingLevel level)
