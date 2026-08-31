@@ -5,10 +5,10 @@ namespace LlamaHarness;
 /// 自持 _statsParser/_gridStats/_lblSummary/_btnClearStats；解析器事件来自进程输出线程，经 uiReady/invokeOnUi
 /// 委托切回 UI 线程（不直接依赖 MainForm 类型，便于测试）。
 /// </summary>
-public sealed class StatsPanelController
+public sealed class StatsPanelView : UserControl
 {
     private readonly SmartScheduler _scheduler;
-    private readonly StatusPanelController _status; // 汇总同步到右侧 Token 统计 + Restore 卡片
+    private readonly StatusPanelView _status; // 汇总同步到右侧 Token 统计 + Restore 卡片
     private readonly Func<bool> _uiReady;
     private readonly Action<Action> _invokeOnUi;
 
@@ -46,7 +46,7 @@ public sealed class StatsPanelController
     };
     private readonly Dictionary<long, DataGridViewRow> _statsRowIdx = new();
 
-    public StatsPanelController(SmartScheduler scheduler, StatusPanelController status,
+    public StatsPanelView(SmartScheduler scheduler, StatusPanelView status,
         Func<bool> uiReady, Action<Action> invokeOnUi)
     {
         _scheduler = scheduler;
@@ -61,6 +61,7 @@ public sealed class StatsPanelController
     /// <summary>构建统计面板（汇总行 + 表格 + 清空按钮）。</summary>
     public Control BuildPage()
     {
+        Dock = DockStyle.Fill;
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -89,7 +90,8 @@ public sealed class StatsPanelController
             UiTheme.MakeGridCol("总耗时(s)"));
 
         _btnClearStats.Click += (_, _) => Reset();
-        return panel;
+        Controls.Add(panel);
+        return this;
     }
 
     /// <summary>会话重置（C-007：由调度器状态机 Waking 驱动；清空按钮同入口）。</summary>

@@ -5,7 +5,7 @@ namespace LlamaHarness;
 /// 数据来自 SmartScheduler.GetSlotBindings/SetSlotPreemptive/SetSlotKvCache；SlotBindingChanged/SlotLog
 /// 事件来自后台线程，经 uiReady/invokeOnUi 切回 UI 线程。
 /// </summary>
-public sealed class SlotPanelController
+public sealed class SlotPanelView : UserControl
 {
     private readonly SmartScheduler _scheduler;
     private readonly Action<string> _appendLog;      // 主日志（槽位管理操作审计）
@@ -19,7 +19,7 @@ public sealed class SlotPanelController
     private RichTextBox _txtSlotLog = null!;
     private readonly Dictionary<string, int> _slotMgmtRowIdx = new(StringComparer.Ordinal);
 
-    public SlotPanelController(SmartScheduler scheduler, Action<string> appendLog,
+    public SlotPanelView(SmartScheduler scheduler, Action<string> appendLog,
         Action<string> setSlotSummary, Func<bool> uiReady, Action<Action> invokeOnUi)
     {
         _scheduler = scheduler;
@@ -32,7 +32,9 @@ public sealed class SlotPanelController
     /// <summary>槽位绑定页（页签3）：上方绑定表格 + 下方槽位日志（独立持久化 slot.log）。</summary>
     public Control BuildBindingsPage()
     {
-        var page = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10) };
+        Dock = DockStyle.Fill;
+        BackColor = UiTheme.C_Bg;
+        Padding = new Padding(10);
         _txtSlotLog = new RichTextBox
         {
             Dock = DockStyle.Fill,
@@ -51,9 +53,9 @@ public sealed class SlotPanelController
         _gridSlots.Columns.AddRange(
             UiTheme.MakeGridCol("亲和 Key"), UiTheme.MakeGridCol("应用"),
             UiTheme.MakeGridCol("槽位"), UiTheme.MakeGridCol("最后活跃"));
-        page.Controls.Add(_txtSlotLog);
-        page.Controls.Add(_gridSlots);
-        return page;
+        Controls.Add(_txtSlotLog);
+        Controls.Add(_gridSlots);
+        return this;
     }
 
     /// <summary>槽位管理页（页签4）：DataGridView（强占/KV缓存 CheckBox 可编辑）。</summary>

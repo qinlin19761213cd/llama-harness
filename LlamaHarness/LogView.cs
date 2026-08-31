@@ -4,7 +4,7 @@ namespace LlamaHarness;
 /// 主日志区渲染（RichTextBox 按行独立着色 + 防抖批量消费）。可来自任意线程。
 /// 日志先入队列，UI 定时器每 150ms 批量消费（一次 AppendText + 逐行着色），减少重绘闪烁。
 /// </summary>
-public sealed class LogView
+public sealed class LogView : UserControl
 {
     /// <summary>日志字符上限（约数万行）：防止长期运行无限增长拖慢 UI。</summary>
     private const int MaxLogChars = 400_000;
@@ -27,6 +27,12 @@ public sealed class LogView
     };
 
     public bool HasPending { get { lock (_logQueue) return _logQueue.Count > 0; } }
+    public LogView()
+    {
+        Dock = DockStyle.Fill;
+        Controls.Add(TxtLog);
+    }
+
 
     /// <summary>追加一行带时间戳的日志并按级别着色（正常绿/警告黄/错误红），自动滚到底部。可来自任意线程。
     /// 防抖：日志先入队列，UI 定时器每 150ms 批量消费，减少重绘闪烁。</summary>

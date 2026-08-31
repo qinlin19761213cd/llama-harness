@@ -14,10 +14,10 @@ public partial class MainForm : Form
     private readonly LogView _logView = new();
 
     // 区域 Controller / Presenter（视图模型层）：承载本区域的控件与业务逻辑
-    private readonly StatusPanelController _status;
-    private readonly StatsPanelController _stats;
-    private readonly SlotPanelController _slot;
-    private readonly MonitorPanelController _monitor;
+    private readonly StatusPanelView _status;
+    private readonly StatsPanelView _stats;
+    private readonly SlotPanelView _slot;
+    private readonly MonitorPanelView _monitor;
     private readonly MainFormPresenter _presenter;
 
 
@@ -31,10 +31,10 @@ public partial class MainForm : Form
         };
 
         // 区域 Controller 装配（先于 BuildUi：各 Controller 的区域控件由 BuildPage 自持创建）
-        _status = new StatusPanelController(_config, _scheduler, AppendLog);
-        _stats = new StatsPanelController(_scheduler, _status, () => IsHandleCreated, InvokeOnUi);
-        _slot = new SlotPanelController(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
-        _monitor = new MonitorPanelController(_config, _status, () => IsDisposed, AppendLog);
+        _status = new StatusPanelView(_config, _scheduler, AppendLog);
+        _stats = new StatsPanelView(_scheduler, _status, () => IsHandleCreated, InvokeOnUi);
+        _slot = new SlotPanelView(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
+        _monitor = new MonitorPanelView(_config, _status, () => IsDisposed, AppendLog);
         _presenter = new MainFormPresenter(this, _config, _scheduler, _status, _stats, _slot, _monitor);
 
         BuildUi();

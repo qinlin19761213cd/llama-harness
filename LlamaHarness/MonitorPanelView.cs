@@ -2,13 +2,13 @@ namespace LlamaHarness;
 
 /// <summary>
 /// 系统资源页 Controller：本地采集（CPU/内存/显存）+ llama.cpp 三接口（/slots /props /metrics）卡片 + Raw 折叠。
-/// 手动刷新触发（无轮询）；采集完成后回调 StatusPanelController 更新右侧摘要/运行时长/崩溃熔断告警。
+/// 手动刷新触发（无轮询）；采集完成后回调 StatusPanelView 更新右侧摘要/运行时长/崩溃熔断告警。
 /// 自持全部卡片控件与布局，MainForm 仅把 BuildPage() 结果挂入系统资源页签。
 /// </summary>
-public sealed class MonitorPanelController
+public sealed class MonitorPanelView : UserControl
 {
     private readonly AppConfig _config;
-    private readonly StatusPanelController _status;
+    private readonly StatusPanelView _status;
     private readonly Func<bool> _isDisposed;
     private readonly Action<string> _appendLog;
 
@@ -37,7 +37,7 @@ public sealed class MonitorPanelController
     private Button _btnRawMetrics = null!;
     private TextBox _rawMetricsBox = null!;
 
-    public MonitorPanelController(AppConfig config, StatusPanelController status,
+    public MonitorPanelView(AppConfig config, StatusPanelView status,
         Func<bool> isDisposed, Action<string> appendLog)
     {
         _config = config;
@@ -49,7 +49,10 @@ public sealed class MonitorPanelController
     /// <summary>构建系统资源页：可滚动 Panel + TableLayoutPanel 纵向布局（工具栏 + 4×标题/卡片）。</summary>
     public Control BuildPage()
     {
-        var page = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10), AutoScroll = true };
+        Dock = DockStyle.Fill;
+        BackColor = UiTheme.C_Bg;
+        Padding = new Padding(10);
+        AutoScroll = true;
 
         var resLayout = new TableLayoutPanel
         {
@@ -171,17 +174,17 @@ public sealed class MonitorPanelController
         _metricsCard.Controls.Add(_rawMetricsBox);
         resLayout.Controls.Add(_metricsCard, 0, 8);
 
-        page.Controls.Add(resLayout);
+        Controls.Add(resLayout);
 
         _btnRefreshRes.Click += (_, _) => Refresh();
         _btnRawSlots.Click += (_, _) => ToggleRaw(_btnRawSlots, _rawSlotsBox);
         _btnRawProps.Click += (_, _) => ToggleRaw(_btnRawProps, _rawPropsBox);
         _btnRawMetrics.Click += (_, _) => ToggleRaw(_btnRawMetrics, _rawMetricsBox);
-        return page;
+        return this;
     }
 
     /// <summary>手动刷新：采集系统资源（本地）+ llama.cpp 三接口（HTTP），更新页面 + 右侧摘要 + 崩溃熔断告警。</summary>
-    public async void Refresh()
+    public new async void Refresh()
     {
         if (Interlocked.Exchange(ref _metricsBusy, 1) == 1) return;
         try

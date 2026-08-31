@@ -5,7 +5,7 @@ namespace LlamaHarness;
 /// 八卡片渲染、ApplyPhase 控件启停状态机、思考模式标签、崩溃熔断红色告警状态。
 /// 自持右侧面板控件；外部操作按钮/参数控件由 MainForm 构建后 BindUi 注入（避免跨类散布控件）。
 /// </summary>
-public sealed class StatusPanelController
+public sealed class StatusPanelView : UserControl
 {
     private readonly AppConfig _config;
     private readonly SmartScheduler _scheduler;
@@ -30,7 +30,7 @@ public sealed class StatusPanelController
     private Button _btnClearLog = null!, _btnClearCache = null!, _btnExportCfg = null!, _btnImportCfg = null!;
     private CheckBox[] _paramCheckBoxes = null!;
 
-    public StatusPanelController(AppConfig config, SmartScheduler scheduler, Action<string> appendLog)
+    public StatusPanelView(AppConfig config, SmartScheduler scheduler, Action<string> appendLog)
     {
         _config = config;
         _scheduler = scheduler;
@@ -168,8 +168,8 @@ public sealed class StatusPanelController
             grid.Controls.Add(cards[i], 0, i);
         }
 
-        panel.Controls.Add(grid);
-        return panel;
+        Controls.Add(grid);
+        return this;
     }
 
     /// <summary>阶段切换状态机：控件启停 + 状态颜色；唤醒 = 新会话。（UI 线程）</summary>

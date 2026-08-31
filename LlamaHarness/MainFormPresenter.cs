@@ -10,14 +10,14 @@ public sealed class MainFormPresenter
     private readonly MainForm _view;
     private readonly AppConfig _config;
     private readonly SmartScheduler _scheduler;
-    private readonly StatusPanelController _status;
-    private readonly StatsPanelController _stats;
-    private readonly SlotPanelController _slot;
-    private readonly MonitorPanelController _monitor;
+    private readonly StatusPanelView _status;
+    private readonly StatsPanelView _stats;
+    private readonly SlotPanelView _slot;
+    private readonly MonitorPanelView _monitor;
 
     public MainFormPresenter(MainForm view, AppConfig config, SmartScheduler scheduler,
-        StatusPanelController status, StatsPanelController stats, SlotPanelController slot,
-        MonitorPanelController monitor)
+        StatusPanelView status, StatsPanelView stats, SlotPanelView slot,
+        MonitorPanelView monitor)
     {
         _view = view;
         _config = config;

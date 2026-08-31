@@ -349,14 +349,14 @@ public partial class MainForm : Form
         var tabStats = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10) };
         tabStats.Controls.Add(_stats.BuildPage());
 
-        // 槽位绑定页：由 SlotPanelController 构建（上方绑定表格 + 下方槽位日志）
+        // 槽位绑定页：由 SlotPanelView 构建（上方绑定表格 + 下方槽位日志）
         var tabSlots = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10) };
         tabSlots.Controls.Add(_slot.BuildBindingsPage());
 
-        // 槽位管理页：由 SlotPanelController 构建（强占/KV缓存 CheckBox 可编辑）
+        // 槽位管理页：由 SlotPanelView 构建（强占/KV缓存 CheckBox 可编辑）
         var tabSlotMgmt = _slot.BuildMgmtPage();
 
-        // 系统资源页：由 MonitorPanelController 构建（本地采集 + llama.cpp 三卡片）
+        // 系统资源页：由 MonitorPanelView 构建（本地采集 + llama.cpp 三卡片）
         var tabRes = _monitor.BuildPage();
 
         // 配置管理页（纯配置面板）
@@ -391,7 +391,7 @@ public partial class MainForm : Form
 
         // 内容宿主：6 页叠放 + Visible 切换（_txtLog 直接作为一页，无中间包装 Panel）
         var host = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
-        _tabPages = new Control[] { _logView.TxtLog, tabStats, tabSlots, tabSlotMgmt, tabRes, _tabConfig, _docPanel };
+        _tabPages = new Control[] { _logView, tabStats, tabSlots, tabSlotMgmt, tabRes, _tabConfig, _docPanel };
         foreach (var p in _tabPages) host.Controls.Add(p);
 
         container.Controls.Add(host);
