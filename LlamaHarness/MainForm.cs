@@ -19,6 +19,7 @@ public partial class MainForm : Form
     private readonly SlotPanelView _slot;
     private readonly MonitorPanelView _monitor;
     private readonly PerfSampler _perfSampler;
+    private readonly PerfMonitorView _perfMonitor;
     private readonly MainFormPresenter _presenter;
 
 
@@ -39,6 +40,7 @@ public partial class MainForm : Form
         _perfSampler = new PerfSampler(() => _scheduler.BackendPort, () => _scheduler.InflightCount); // v2.21 性能采样（双节奏 1s/5s，端口门控 cpp）
         _perfSampler.Sampled += OnPerfSampled; // 采样点 → perf.log（system 1s + cpp 5s）
         _scheduler.Timing.Completed += OnPerfTiming; // 请求时延 → perf.log（timing 事件）
+        _perfMonitor = new PerfMonitorView(_perfSampler, _scheduler.Timing, _config.PerfThresholds, AppendLog); // v2.21 性能监控页
         _presenter = new MainFormPresenter(this, _config, _scheduler, _status, _stats, _slot, _monitor);
 
         BuildUi();
@@ -173,6 +175,7 @@ public partial class MainForm : Form
         if (!_config.Save(out string? err))
             AppendLog($"警告：配置保存失败：{err}");
         _perfSampler.Dispose(); // 停止后台采样（Step2 接线）
+        _perfMonitor.Shutdown(); // 停止监控页定时器与事件订阅（v2.21）
         PerfLog.Stop(); // 关闭性能日志写入器（Flush 后释放文件）
         _scheduler.Dispose();
         LogFile.Shutdown(); // E-6：Flush + 关闭常驻日志写入器（防缓冲丢失）

@@ -230,7 +230,7 @@ public partial class MainForm : Form
         _btnExportCfg = UiTheme.MakeBtn("保存配置到…", "数据上传.png", h: 30);
         _btnImportCfg = UiTheme.MakeBtn("载入配置", "路径设置.png", h: 30);
         btnSlotMgmt.Click += (_, _) => SelectTab(3); // 槽位管理页
-        btnOpenConfig.Click += (_, _) => SelectTab(5); // 配置管理页
+        btnOpenConfig.Click += (_, _) => SelectTab(6); // 配置管理页（v2.21 性能监控插入后索引后移）
 
         // ── User Manual（接线：显示 static/doc 对应文档）──
         var lblManualTitle = UiTheme.MakeSectionTitle("User Manual");
@@ -373,6 +373,9 @@ public partial class MainForm : Form
         // 系统资源页：由 MonitorPanelView 构建（本地采集 + llama.cpp 三卡片）
         var tabRes = _monitor.BuildPage();
 
+        // 性能监控页：由 PerfMonitorView 构建（趋势图 + 实时数字 + 阈值告警 + perf.log 摘要）
+        var tabPerf = _perfMonitor.BuildPage();
+
         // 配置管理页（纯配置面板）
         _tabConfig = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10), AutoScroll = true };
         _tabConfig.Controls.Add(BuildConfigPanel());
@@ -381,7 +384,7 @@ public partial class MainForm : Form
         _docPanel = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_TextBg, Padding = new Padding(8) };
 
         // 页签条：7 个扁平按钮（选中橙底黑字 / 未选 #3d3d3d 白字，悬停变亮）
-        string[] names = { "日志", "统计", "槽位绑定", "槽位管理", "系统资源", "配置管理", "信息展示" };
+        string[] names = { "日志", "统计", "槽位绑定", "槽位管理", "系统资源", "性能监控", "配置管理", "信息展示" };
         _tabButtons = new Button[names.Length];
         for (int i = 0; i < names.Length; i++)
         {
@@ -405,7 +408,7 @@ public partial class MainForm : Form
 
         // 内容宿主：6 页叠放 + Visible 切换（_txtLog 直接作为一页，无中间包装 Panel）
         var host = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
-        _tabPages = new Control[] { _logView, tabStats, tabSlots, tabSlotMgmt, tabRes, _tabConfig, _docPanel };
+        _tabPages = new Control[] { _logView, tabStats, tabSlots, tabSlotMgmt, tabRes, tabPerf, _tabConfig, _docPanel };
         foreach (var p in _tabPages) host.Controls.Add(p);
 
         container.Controls.Add(host);
