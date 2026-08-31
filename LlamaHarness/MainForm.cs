@@ -38,9 +38,6 @@ public partial class MainForm : Form
         _presenter = new MainFormPresenter(this, _config, _scheduler, _status, _stats, _slot, _monitor);
 
         BuildUi();
-        // ApplyPhase 需要操作按钮/参数控件/端口：BuildUi 完成后注入（区域页签已由各 Controller.BuildPage 挂入）
-        _status.BindUi(_paramControls, _numPort, _btnStart, _btnStop, _btnThinkOn, _btnTurbo,
-            _btnClearLog, _btnClearCache, _btnExportCfg, _btnImportCfg, ParamCheckBoxes);
 
         LoadConfigToUi();
         LogFile.Configure(_config.LogQueueFullPolicy); // 异步日志管道队列满策略（立即生效）

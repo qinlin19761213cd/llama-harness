@@ -23,7 +23,7 @@ public sealed class StatusPanelView : UserControl
     private DateTime? _wakeTime;            // 本次唤醒时刻（非 Running 为 null）
     private bool _crashAlertShown;          // 崩溃熔断红色告警状态（防重复告警）
 
-    // 外部注入：操作按钮（ApplyPhase 启停）+ 参数控件数组 + 端口控件（智能模式禁编辑）+ 参数 CheckBox 集合
+    // 外部注入（v2.17.2 并入 BuildPage 参数，消除 BindUi 两步模式）：操作按钮 + 参数控件数组 + 端口 + 参数 CheckBox
     private Control[] _paramControls = null!;
     private NumericUpDown _numPort = null!;
     private Button _btnStart = null!, _btnStop = null!, _btnThinkOn = null!, _btnTurbo = null!;
@@ -37,8 +37,10 @@ public sealed class StatusPanelView : UserControl
         _appendLog = appendLog;
     }
 
-    /// <summary>MainForm 构建完 UI 后注入外部控件（操作按钮/参数控件/端口），ApplyPhase 据此启停。</summary>
-    public void BindUi(Control[] paramControls, NumericUpDown numPort,
+
+    /// <summary>构建右侧状态面板（30% 列）：八卡片纵向等高堆叠 + 一次性注入外部控件（操作按钮/参数控件/端口/参数CheckBox），
+    /// 消除先构造后注入的 BindUi 两步模式（v2.17.2）：ApplyPhase 据此启停，注入点唯一、由调用方签名强制。</summary>
+    public Control BuildPage(Control[] paramControls, NumericUpDown numPort,
         Button start, Button stop, Button thinkOn, Button turbo,
         Button clearLog, Button clearCache, Button exportCfg, Button importCfg,
         CheckBox[] paramCheckBoxes)
@@ -54,11 +56,7 @@ public sealed class StatusPanelView : UserControl
         _btnExportCfg = exportCfg;
         _btnImportCfg = importCfg;
         _paramCheckBoxes = paramCheckBoxes;
-    }
 
-    /// <summary>构建右侧状态面板（30% 列）：八卡片纵向等高堆叠（原底部 SideStatsPanel 移入）。</summary>
-    public Control BuildPage()
-    {
         // 容器自身填满 Panel2（30% 列）：缺失此设置 UserControl 以默认 150x150 挂在左上角，8 卡片被压扁不可见
         Dock = DockStyle.Fill;
         BackColor = UiTheme.C_Frame;

@@ -111,7 +111,6 @@ public partial class MainForm : Form
         var tabArea = BuildTabArea();
         var leftPanel = BuildLeftPanel();
         var titleBlock = BuildTitleBlock();
-        var statusPanel = _status.BuildPage();
 
         // 参数控件清单一次构建（审计：原实现每次 ApplyPhase 调用都重建数组）
         _paramControls = new Control[]
@@ -126,6 +125,9 @@ public partial class MainForm : Form
         _paramControls = _paramControls.Concat(_autoPreChecks).Concat(_snapChecks)
             .Concat(new Control[] { _btnExportCfg, _btnImportCfg }) // 运行中禁止导入/导出，避免改参冲突
             .ToArray();
+
+        var statusPanel = _status.BuildPage(_paramControls, _numPort, _btnStart, _btnStop, _btnThinkOn, _btnTurbo,
+            _btnClearLog, _btnClearCache, _btnExportCfg, _btnImportCfg, ParamCheckBoxes);
 
         // ════════════ 右侧主区：顶部橙色标题块 + 下方 7:3 分栏（左页签 | 右状态面板）════════════
         var rightContent = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
