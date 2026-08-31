@@ -19,7 +19,9 @@ public partial class SmartScheduler
     private const int WakeDelayMs = 2000;
     private const int StandbyDelayMs = 1000;
     private const int SaveAllTimeoutSeconds = 60;
-    /// <summary>确保后端服务运行；未运行时排队等待唤醒任务。</summary>
+    /// <summary>AH-18：唤醒等待超时（秒）。正常唤醒 1-3 分钟（模型加载 + warming 60s 兜底），3 分钟足够宽不误杀。</summary>
+    private const int WakeWaitTimeoutSeconds = 180;
+    /// <summary>确保后端服务运行；未运行时排队等待唤醒任务。AH-18：等待加超时（后端就绪环节卡死时客户端不再无限挂起，超时由调用方回 503/弹窗）。</summary>
     private async Task EnsureRunningAsync()
     {
         if (_server.IsRunning) return;
@@ -28,7 +30,7 @@ public partial class SmartScheduler
         {
             t = _wakeTask ??= WakeUpAsync();
         }
-        await t;
+        await t.WaitAsync(TimeSpan.FromSeconds(WakeWaitTimeoutSeconds));
     }
 
     /// <summary>
@@ -346,6 +348,11 @@ public partial class SmartScheduler
             RaiseStatus("闲置超时，正在释放显存…");
             _server.Stop(); // Exited 事件将把状态拉回 Standby
         }
+        catch (Exception ex)
+        {
+            // AH-11：休眠流程异常不再静默吞掉（fire-and-forget 无观察者，异常将丢失）——记录后继续复位
+            Log?.Invoke($"休眠流程异常：{ex.GetType().Name}: {ex.Message}（进程释放仍继续）。");
+        }
         finally
         {
             lock (_sleepGate) { _sleepPreparing = false; }
@@ -418,10 +425,18 @@ public partial class SmartScheduler
     /// <summary>C-006：休眠 Kill 进程树后延迟读显存；未回落到待机水平则告警（衍生子进程孤儿残留）。</summary>
     private async Task VerifyVramReleasedAsync()
     {
-        await Task.Delay(3000); // 等 GPU 驱动回收显存稳定
-        var mb = await SystemMetrics.GetVramUsedMbAsync();
-        if (mb is > VramAlertThresholdMb)
-            Log?.Invoke($"警告：休眠后显存占用仍为 {mb} MB（预期接近 0），疑似 llama-server 衍生子进程残留，请在任务管理器中检查。");
+        try
+        {
+            await Task.Delay(3000); // 等 GPU 驱动回收显存稳定
+            var mb = await SystemMetrics.GetVramUsedMbAsync();
+            if (mb is > VramAlertThresholdMb)
+                Log?.Invoke($"警告：休眠后显存占用仍为 {mb} MB（预期接近 0），疑似 llama-server 衍生子进程残留，请在任务管理器中检查。");
+        }
+        catch (Exception ex)
+        {
+            // AH-11：显存校验异常（如 nvidia-smi 偶发失败）不静默——记录便于诊断
+            Log?.Invoke($"显存回落校验失败：{ex.GetType().Name}: {ex.Message}。");
+        }
     }
 
     /// <summary>停止按钮 / 关闭前：终止进程树。</summary>

@@ -18,6 +18,8 @@ public static class OutputContinuer
     private const int FlushDelayMs = 2000;
     private const int HeldLineMax = 65536;
     private const string ContinuePrompt = "请继续输出，不要重复已有内容，延续上文逻辑完成剩余内容";
+    /// <summary>AH-3：流式读 idle 超时（毫秒）。后端长期无字节时判定疑似假死（10 分钟足够容忍大上下文 prefill / 长思考）。</summary>
+    private const int BackendIdleTimeoutMs = 600_000;
 
     /// <summary>单轮 SSE 管道结果。</summary>
     private enum RoundOutcome { Normal, Truncated, Aborted }
@@ -184,7 +186,22 @@ public static class OutputContinuer
         int scanFrom = 0;     // 下一轮扫描起点（上次扫描到的位置）
         while (true)
         {
-            int n = await stream.ReadAsync(chunk);
+            // AH-3：流式读 idle 超时看门狗——后端假死（长期无字节）时不再无限挂起。
+            // 每轮重建 CTS：读到数据即重置计时；超时抛 TimeoutException 由上层记录告警并断开（不触发自动崩溃恢复，避免误杀长思考）。
+            using var readCts = new CancellationTokenSource(BackendIdleTimeoutMs);
+            int n;
+            try
+            {
+                n = await stream.ReadAsync(chunk, readCts.Token);
+            }
+            catch (OperationCanceledException) when (!readCts.IsCancellationRequested)
+            {
+                throw; // 外部取消（非本看门狗超时），原样上抛
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException("后端流式响应空闲超时（疑似后端假死，长期无数据）。");
+            }
             if (n <= 0) break;
             if (len + n > buf.Length)
             {

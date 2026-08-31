@@ -274,12 +274,17 @@ public partial class SmartScheduler
                 }
             }
         }
-        catch (Exception)
+        catch (IOException ex)
         {
             // 客户端断开/写入失败：方法退出时 dispose resp 关闭后端连接，
             // llama-server 检测到断开会取消任务并保留部分槽位 KV（f_keep），释放 GPU。
             // 多 agent 模式下这是预期行为（agent 超时/重试），非致命错误。
-            Log?.Invoke("客户端断开，已中止本次生成（多 agent 下属正常重试）。");
+            Log?.Invoke($"客户端断开，已中止本次生成（{ex.Message}；多 agent 下属正常重试）。");
+        }
+        catch (Exception ex)
+        {
+            // AH-4：非 IO 异常（后端流异常/解析异常等）不能再笼统归为"客户端断开"——记录异常类型与消息，便于定位真因
+            Log?.Invoke($"错误：响应管道异常（{ex.GetType().Name}: {ex.Message}），已中止本次生成并关闭后端连接。");
         }
         finally
         {
