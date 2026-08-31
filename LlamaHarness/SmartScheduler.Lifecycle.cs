@@ -12,6 +12,13 @@ namespace LlamaHarness;
 /// </summary>
 public partial class SmartScheduler
 {
+    private const int WarmingTimeoutSeconds = 60;
+    private const int ReadyProbeTimeoutSeconds = 3;
+    private const int ProgressFirstSeconds = 10;
+    private const int ProgressNextStepSeconds = 15;
+    private const int WakeDelayMs = 2000;
+    private const int StandbyDelayMs = 1000;
+    private const int SaveAllTimeoutSeconds = 60;
     /// <summary>确保后端服务运行；未运行时排队等待唤醒任务。</summary>
     private async Task EnsureRunningAsync()
     {
@@ -86,7 +93,7 @@ public partial class SmartScheduler
         RaiseStatus("预热中…（restore KV + 捕获 decode graph）");
         try
         {
-            using var warmCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            using var warmCts = new CancellationTokenSource(TimeSpan.FromSeconds(WarmingTimeoutSeconds));
             await RunWarmingAsync(srvPort, warmCts.Token);
         }
         catch (Exception ex)
@@ -183,12 +190,12 @@ public partial class SmartScheduler
         var url = $"http://localhost:{srvPort}/v1/models";
         var deadline = DateTime.Now + TimeSpan.FromMinutes(5);
         var start = DateTime.Now;
-        int nextProgressAtSec = 10; // 下次进度日志的累计秒数阈值
+        int nextProgressAtSec = ProgressFirstSeconds; // 下次进度日志的累计秒数阈值
         while (DateTime.Now < deadline)
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ReadyProbeTimeoutSeconds));
                 using var r = await _hc.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
                 if (r.IsSuccessStatusCode)
                 {
@@ -209,11 +216,11 @@ public partial class SmartScheduler
             int elapsedSec = (int)(DateTime.Now - start).TotalSeconds;
             if (elapsedSec >= nextProgressAtSec)
             {
-                nextProgressAtSec = elapsedSec + 15;
+                nextProgressAtSec = elapsedSec + ProgressNextStepSeconds;
                 var lastLine = RecentOutput().Split('\n').LastOrDefault()?.Trim();
                 Log?.Invoke($"等待 llama-server 就绪… {elapsedSec}s（正在加载模型/显存分配。最新输出：{(string.IsNullOrEmpty(lastLine) ? "无" : lastLine)}）");
             }
-            await Task.Delay(2000);
+            await Task.Delay(WakeDelayMs);
         }
         throw new TimeoutException("等待 llama-server 就绪超时（5 分钟）。");
     }
@@ -320,7 +327,7 @@ public partial class SmartScheduler
             // 静默观察期：期间任何新请求（Touch 刷新基准点）或在途任务都取消本次休眠
             for (int i = 0; i < SleepGraceSeconds; i++)
             {
-                await Task.Delay(1000).ConfigureAwait(false);
+                await Task.Delay(StandbyDelayMs).ConfigureAwait(false);
                 if (Volatile.Read(ref _inflight) > 0 || Interlocked.Read(ref _lastTouchTicks) != touchAtEntry)
                 {
                     Log?.Invoke("休眠取消：观察期内有新请求或在途任务。");
@@ -355,7 +362,7 @@ public partial class SmartScheduler
         var kv = _kvCache;
         if (aff == null || kv == null) return; // --slots 未启用：无快照能力，直接休眠
         // O-13：60s CTS——超时后主动取消孤儿 save 任务（原实现 WaitAsync 只停止等待，任务仍在后台运行）
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(SaveAllTimeoutSeconds));
         var saveAll = Task.Run(async () =>
         {
             foreach (var b in aff.Snapshot()) // (Key, App, Slot, LastActive, Preemptive, KvCache)
@@ -383,7 +390,7 @@ public partial class SmartScheduler
         }, cts.Token);
         try
         {
-            await saveAll.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+            await saveAll.WaitAsync(TimeSpan.FromSeconds(SaveAllTimeoutSeconds)).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {

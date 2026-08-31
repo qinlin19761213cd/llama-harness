@@ -12,6 +12,7 @@ namespace LlamaHarness;
 /// </summary>
 public partial class SmartScheduler
 {
+    private const int ReconnectDelayMs = 500;
     /// <summary>把请求原样转发到后端；ResponseHeadersRead + CopyToAsync 保证 SSE/流式响应直通。
     /// 审计 O-8：按管道阶段拆分为 读体 → 网关预处理 → 转发管道 → 完成清理 四段，本方法仅做编排。</summary>
     private async Task ForwardAsync(HttpListenerContext ctx)
@@ -77,7 +78,7 @@ public partial class SmartScheduler
         {
             // 连接层瞬时失败（后端刚重启 / 连接被重置）：稍等后重试一次
             Log?.Invoke("转发连接异常，正在重试…");
-            await Task.Delay(500);
+            await Task.Delay(ReconnectDelayMs);
             resp = await _hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
         }
         return resp;

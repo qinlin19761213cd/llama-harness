@@ -84,6 +84,7 @@ public class LlamaGlobalProps
 /// </summary>
 public class LlamaCppMonitorCollector
 {
+    private const int ProbeTimeoutSeconds = 8;
     private readonly HttpClient _httpClient;
 
     public LlamaCppMonitorCollector(string baseAddress)
@@ -91,7 +92,7 @@ public class LlamaCppMonitorCollector
         var uri = baseAddress.TrimEnd('/');
         _httpClient = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(8),
+            Timeout = TimeSpan.FromSeconds(ProbeTimeoutSeconds),
             BaseAddress = new Uri(uri),
         };
     }

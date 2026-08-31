@@ -196,6 +196,8 @@ public sealed class LogPipeline : IDisposable
 
     /// <summary>warn_error 块附带的前置 main 日志条数（写线程侧环形缓冲，语义 = "该条之前 10 条"）。</summary>
     private const int WarnContextLines = 10;
+    private const int MaxDrainPerTick = 8192;
+    private const int BatchCapacity = 512;
 
     private readonly BoundedLineQueue _queue;
     private readonly Thread _writerThread;
@@ -261,12 +263,12 @@ public sealed class LogPipeline : IDisposable
     /// <summary>写线程主循环：等数据信号或 150ms tick → 批量出队处理 → Flush 判定 → shutdown drain 退出。</summary>
     private void WriterLoop()
     {
-        var batch = new List<LogMessage>(512);
+        var batch = new List<LogMessage>(BatchCapacity);
         while (true)
         {
             _wake.Wait(FlushPolicy.IntervalMs); // 数据信号（auto-reset）或超时 tick
             int total = 0;
-            while (_queue.Drain(batch, 512) > 0 && total < 8192)
+            while (_queue.Drain(batch, BatchCapacity) > 0 && total < MaxDrainPerTick)
             {
                 ProcessBatch(batch);
                 total += batch.Count;

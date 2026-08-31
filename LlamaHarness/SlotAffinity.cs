@@ -14,6 +14,9 @@ namespace LlamaHarness;
 /// </summary>
 public sealed class SlotAffinity
 {
+    private const int MaxWaitSecondsDefault = 30;
+    private const int PollIntervalMs = 1000;
+    private const int StaleBindingDays = 30;
     private readonly IReadOnlyList<AffinityRule> _rules;
     private readonly int _slotCount;
     private readonly object _gate = new();
@@ -38,7 +41,7 @@ public sealed class SlotAffinity
     /// 驱逐优先级：Tool 链锁定 > 手动/自动强占（Tool 是瞬态的，循环结束自动解锁）。</summary>
     private readonly HashSet<string> _toolLockedKeys = new(StringComparer.OrdinalIgnoreCase);
 
-    public SlotAffinity(int slotCount, int maxWaitSeconds = 30, IReadOnlyList<AffinityRule>? rules = null)
+    public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null)
     {
         _slotCount = Math.Max(1, slotCount);
         _maxWaitSeconds = Math.Max(1, maxWaitSeconds);
@@ -103,7 +106,7 @@ public sealed class SlotAffinity
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (sw.Elapsed.TotalSeconds < _maxWaitSeconds)
         {
-            Thread.Sleep(1000);
+            Thread.Sleep(PollIntervalMs);
             lock (_gate)
             {
                 var alloc = TryAllocateLocked(key, autoPre);
@@ -316,7 +319,7 @@ public sealed class SlotAffinity
                 bool preemptive = v?["preemptive"]?.GetValue<bool>() ?? false;
                 bool kvCache = v?["kvCache"]?.GetValue<bool>() ?? true;
                 if (slot < 0 || slot >= _slotCount) continue; // --parallel 缩减：丢弃越界绑定
-                if (!DateTime.TryParse(lastActive, out var dt)) dt = DateTime.Now.AddDays(-30);
+                if (!DateTime.TryParse(lastActive, out var dt)) dt = DateTime.Now.AddDays(-StaleBindingDays);
                 _bindings[kv.Key] = new Binding { Slot = slot, LastActive = dt, Preemptive = preemptive, KvCache = kvCache };
             }
         }

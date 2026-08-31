@@ -14,6 +14,9 @@ namespace LlamaHarness;
 /// </summary>
 public static class TokenGuard
 {
+    private const int MinTrimLen = 50;
+    private const int MinTrimContentLen = 200;
+    private const int GuardTimeoutSeconds = 30;
     /// <summary>经后端 /v1/tokenize 端点计数 token。失败返回 null（调用方降级原样转发）。</summary>
     public static async Task<int?> CountTokensAsync(HttpClient hc, int port, string text)
     {
@@ -24,7 +27,7 @@ public static class TokenGuard
             {
                 Content = new StringContent(payload.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
             };
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GuardTimeoutSeconds));
             using var resp = await hc.SendAsync(req, cts.Token);
             if (!resp.IsSuccessStatusCode) return null;
             var body = await resp.Content.ReadAsStringAsync(cts.Token);
@@ -162,8 +165,8 @@ public static class TokenGuard
         {
             int maxIdx = IndexOfLargestContent(messages);
             string? content = maxIdx >= 0 ? GetContent(messages[maxIdx]!) : null;
-            if (content == null || content.Length < 200) break; // 无可再裁的内容
-            int newLen = Math.Max(50, (int)(content.Length * retain));
+            if (content == null || content.Length < MinTrimContentLen) break; // 无可再裁的内容
+            int newLen = Math.Max(MinTrimLen, (int)(content.Length * retain));
             // O-14：头尾双保留（头部留上下文、尾部留最新信息），替代纯头部截断
             int half = newLen / 2;
             int tail = newLen - half;

@@ -12,6 +12,7 @@ namespace LlamaHarness;
 /// </summary>
 public partial class SmartScheduler
 {
+    private const int AcceptRetryDelayMs = 2000;
     private void StartListening()
     {
         if (_listener.IsListening) return;
@@ -65,7 +66,7 @@ public partial class SmartScheduler
                     RaiseStatus("监听失败：端口不可用，请检查端口后重启智能模式。");
                     return;
                 }
-                await Task.Delay(2000);
+                await Task.Delay(AcceptRetryDelayMs);
                 try
                 {
                     _listener.Stop();

@@ -11,6 +11,9 @@ namespace LlamaHarness;
 /// </summary>
 public sealed class SystemMetrics
 {
+    private const double BytesPerGb = 1073741824.0;
+    private const int ExitProbeTimeoutMs = 5000;
+    private const int NvidiaProbeTimeoutMs = 3000;
     private static class Native
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -67,7 +70,7 @@ public sealed class SystemMetrics
     {
         var ms = new Native.MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<Native.MEMORYSTATUSEX>() };
         if (!Native.GlobalMemoryStatusEx(ref ms)) return (0, 0);
-        const double gb = 1073741824.0; // 1024^3
+        const double gb = BytesPerGb; // 1024^3
         return ((ms.ullTotalPhys - ms.ullAvailPhys) / gb, ms.ullTotalPhys / gb);
     }
 
@@ -106,16 +109,16 @@ public sealed class SystemMetrics
             using var p = Process.Start(psi)!;
             // nvidia-smi 可能挂起（驱动忙）：3 秒超时放弃本轮并杀进程，防线程堆积
             var lineTask = p.StandardOutput.ReadLineAsync();
-            var finished = await Task.WhenAny(lineTask, Task.Delay(3000));
+            var finished = await Task.WhenAny(lineTask, Task.Delay(NvidiaProbeTimeoutMs));
             if (finished != lineTask)
             {
                 try { p.Kill(); } catch { }
                 // C-004：Kill 后必须 WaitForExit 回收进程对象，防长期运行句柄缓慢泄漏
-                p.WaitForExit(3000);
+                p.WaitForExit(NvidiaProbeTimeoutMs);
                 return null;
             }
             string? line = await lineTask;
-            p.WaitForExit(5000);
+            p.WaitForExit(ExitProbeTimeoutMs);
             return line;
         }
         catch

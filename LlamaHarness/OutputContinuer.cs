@@ -15,6 +15,8 @@ namespace LlamaHarness;
 /// </summary>
 public static class OutputContinuer
 {
+    private const int FlushDelayMs = 2000;
+    private const int HeldLineMax = 65536;
     private const string ContinuePrompt = "请继续输出，不要重复已有内容，延续上文逻辑完成剩余内容";
 
     /// <summary>单轮 SSE 管道结果。</summary>
@@ -134,7 +136,7 @@ public static class OutputContinuer
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    await Task.Delay(2000, ct);
+                    await Task.Delay(FlushDelayMs, ct);
                     // P1：心跳必须发「合法 SSE data 事件」（空 delta chunk）。
                     // 不能用 ":" 开头的注释行——DSH(deepseek-harness) 等严格 JSON 客户端无法解析注释行，
                     // 会报 "Unexpected non-whitespace character after JSON"。空 delta chunk 符合 OpenAI SSE 规范，
@@ -202,7 +204,7 @@ public static class OutputContinuer
             }
             scanFrom = len; // 已扫到末尾，下轮从新追加的字节继续
             // 压实：已处理量超 64KB → 未处理尾部一次性搬到头部、偏移归零（避免长期运行 buf 无限增长）
-            if (lineStart > 65536)
+            if (lineStart > HeldLineMax)
             {
                 int remaining = len - lineStart;
                 Array.Copy(buf, lineStart, buf, 0, remaining);

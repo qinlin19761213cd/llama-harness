@@ -6,12 +6,14 @@ namespace LlamaHarness;
 /// </summary>
 public static class SchedulerUtils
 {
+    private const int MaxPort = 65535;
+    private const int PortProbeRange = 32;
     /// <summary>从 preferred 开始向上扫描，返回第一个可绑定的空闲端口（规避 Hyper-V/WSL2 动态端口保留）。
     /// 注意：探测与 llama-server 实际绑定之间存在极小的 TOCTOU 窗口；若该窗口内端口被抢占，
     /// llama-server 绑定失败会自行退出，WaitReadyAsync 检测到进程退出并上报失败，下次唤醒重新探测——本机单用户场景可接受。</summary>
     public static int PickFreePort(int preferred)
     {
-        var upper = Math.Min(preferred + 32, 65535);
+        var upper = Math.Min(preferred + PortProbeRange, MaxPort);
         for (int p = preferred; p <= upper; p++)
         {
             try

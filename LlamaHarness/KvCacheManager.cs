@@ -24,6 +24,7 @@ public sealed class KvCacheManager
 
     /// <summary>缓存索引持久化文件（exe 同目录）。</summary>
     /// <summary>KV Cache 索引路径：项目目录下 config/kv_cache_index.json。</summary>
+    private const int StaleEntryDays = 30;
     private static readonly string IndexPath = AppPaths.KvCacheIndexJson;
 
     /// <summary>key → (slot, savedAt, nTokens, sizeBytes)。</summary>
@@ -331,7 +332,7 @@ public sealed class KvCacheManager
                 if (prop.Value.TryGetProperty("savedAt", out var sa)) savedAt = sa.GetString() ?? "";
                 if (prop.Value.TryGetProperty("nTokens", out var nt)) nTokens = nt.GetInt32();
                 if (prop.Value.TryGetProperty("sizeBytes", out var sb)) sizeBytes = sb.GetInt32();
-                if (!DateTime.TryParse(savedAt, out var dt)) dt = DateTime.Now.AddDays(-30);
+                if (!DateTime.TryParse(savedAt, out var dt)) dt = DateTime.Now.AddDays(-StaleEntryDays);
                 _index[prop.Name] = new CacheEntry { Slot = slot, SavedAt = dt, NTokens = nTokens, SizeBytes = sizeBytes };
             }
         }
