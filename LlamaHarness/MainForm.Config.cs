@@ -7,10 +7,10 @@ namespace LlamaHarness;
 /// </summary>
 public partial class MainForm
 {
-    private void LoadConfigToUi() => WriteConfigToUi(_config);
+    private void LoadConfigToUi() => ApplyConfigToUi(_config);
 
-    /// <summary>把配置对象写入全部 UI 控件（启动时 / 载入配置文件共用）。</summary>
-    private void WriteConfigToUi(AppConfig cfg)
+    /// <summary>把配置对象写入全部 UI 控件（启动时 / 载入配置文件共用）。供 Presenter（配置导入）调用。</summary>
+    internal void ApplyConfigToUi(AppConfig cfg)
     {
         _txtExe.Text = cfg.ExePath;
         _txtModel.Text = cfg.ModelPath;
@@ -60,11 +60,11 @@ public partial class MainForm
         _chkSnapDshAgent.Checked = snapSet.Contains("dsh_agent_global");
     }
 
-    /// <summary>智能模式下监听器占用前端端口，改端口需重绑，监听中禁止编辑。</summary>
-    private void UpdatePortControlState() => _numPort.Enabled = !_config.AutoMode;
+    /// <summary>智能模式下监听器占用前端端口，改端口需重绑，监听中禁止编辑。供 Presenter（自动模式切换）调用。</summary>
+    internal void UpdatePortControlState() => _numPort.Enabled = !_config.AutoMode;
 
-    /// <summary>UI → 共享配置对象（内存同步；持久化时机：唤醒成功 / 模式切换 / 关闭）。</summary>
-    private void SyncUiToConfig()
+    /// <summary>UI → 共享配置对象（内存同步；持久化时机：唤醒成功 / 模式切换 / 关闭）。供 Presenter 与 OnFormClosing 调用。</summary>
+    internal void SyncConfigFromUi()
     {
         _config.ExePath = _txtExe.Text.Trim();
         _config.ModelPath = _txtModel.Text.Trim();

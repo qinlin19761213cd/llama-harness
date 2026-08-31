@@ -67,78 +67,6 @@ public partial class MainForm : Form
     private Button _btnExportCfg = null!;
     private Button _btnImportCfg = null!;
 
-    // —— 思考模式状态标签（侧边统计面板）——
-    private readonly Label _lblThinking = new()
-    {
-        Text = "思考: 极速",
-        ForeColor = Color.Silver,
-    };
-
-    // —— 系统资源统计（手动触发，无轮询）——
-    private readonly SystemMetrics _metrics = new();
-    private Button _btnRefreshRes = null!;
-    private Label _lblResTimestamp = null!;
-    private Panel _sysCard = null!;         // 系统资源卡片容器
-    private Label _lblSysRes = null!;       // 系统资源卡片内容
-    private Panel _slotsCard = null!;       // /slots 卡片容器
-    private Label _lblSlotsTitle = null!;   // /slots 标题（含状态 ✓/✗）
-    private Label _lblSlotsBody = null!;    // /slots 数据区
-    private Button _btnRawSlots = null!;    // [查看原始报文 ▸]
-    private TextBox _rawSlotsBox = null!;   // Raw 内容（TextBox 支持滚动）
-    private Panel _propsCard = null!;       // /props 卡片容器
-    private Label _lblPropsTitle = null!;   // /props 标题（含状态 ✓/✗）
-    private TableLayoutPanel _tblPropsBody = null!; // /props 数据区（两列表格：左标签+右值）
-    private Button _btnRawProps = null!;    // [查看原始报文 ▸]
-    private TextBox _rawPropsBox = null!;   // Raw 内容（TextBox 支持滚动）
-    private Panel _metricsCard = null!;     // /metrics 卡片容器
-    private Label _lblMetricsTitle = null!; // /metrics 标题（含状态 ✓/✗）
-    private Label _lblMetricsBody = null!;  // /metrics 数据区
-    private Button _btnRawMetrics = null!;  // [查看原始报文 ▸]
-    private TextBox _rawMetricsBox = null!; // Raw 内容（TextBox 支持滚动）
-    private LlamaCppMonitorCollector? _monitorCollector; // llama.cpp 采集器（懒初始化，端口确定后创建）
-    private int _metricsBusy;
-    private bool _crashAlertShown; // 崩溃熔断红色告警状态（防重复告警；窗口滑出后自动恢复）
-
-    // —— 主日志区（LogView 承载：RichTextBox 按行独立着色 + 防抖）——
-    // —— 统计区（实时解析 print_timing）——
-    private readonly LlamaStatsParser _statsParser = new();
-    private readonly Label _lblSummary = new()
-    {
-        Dock = DockStyle.Top,
-        AutoSize = true,
-        TextAlign = ContentAlignment.MiddleLeft,
-        ForeColor = UiTheme.C_Primary,
-        Font = new Font("Consolas", 9F),
-        Margin = new Padding(4, 4, 4, 4),
-    };
-    private readonly Button _btnClearStats = new()
-    {
-        Text = "清空统计",
-        Size = new Size(80, 26),
-        FlatStyle = FlatStyle.Flat,
-        BackColor = UiTheme.C_Btn,
-        ForeColor = Color.White,
-    };
-    private readonly DataGridView _gridStats = new()
-    {
-        Dock = DockStyle.Fill,
-        ReadOnly = true,
-        AllowUserToAddRows = false,
-        AllowUserToResizeRows = false,
-        BorderStyle = BorderStyle.None, // 无边框，消除白边
-        AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-        BackgroundColor = UiTheme.C_TextBg,
-        ForeColor = UiTheme.C_TextFg,
-        GridColor = UiTheme.C_Card,
-        RowHeadersVisible = false,
-        RowTemplate = new DataGridViewRow { Height = 22 },
-    };
-
-    // —— 槽位绑定表格（页签3）——
-    private DataGridView _gridSlots = null!;
-    // —— 槽位管理页/表格（页签4，强占/KV缓存可编辑）——
-    private Panel _tabSlotMgmt = null!;
-    private DataGridView _gridSlotMgmt = null!;
     // —— 配置管理页（页签6）——
     private Panel _tabConfig = null!;
     private Panel _docPanel = null!; // 文档展示面板（右侧，点击使用说明/常见问题/更新内容后显示）
@@ -149,27 +77,11 @@ public partial class MainForm : Form
     private Control[] _tabPages = null!; // 页签页（_txtLog 是 RichTextBox，其余为 Panel，统一用 Control）
     private int _currentTab = 0;
 
-    // —— 右侧状态面板（原底部 SideStatsPanel 移入）——
-    private Label _lblStatus = null!;       // 服务阶段卡片：调度器状态文本（运行中 · N个在途任务…），替代原侧边栏实例
-    private Label _lblModuleState = null!;  // 模块状态（网关 运行中绿 / 已停止红）
-    private Label _lblResSummary = null!;   // 系统资源单行摘要（CPU/内存/显存）
-    private Label _lblRunTime = null!;      // 运行时长（自本次唤醒起）
-    private DateTime? _wakeTime;    // 本次唤醒时刻（非 Running 为 null）
-
 
     // —— 参数控件清单（BuildUi 一次构建；ApplyPhase 按相位批量启停，审计：原实现每次调用重建数组）——
     private Control[] _paramControls = null!;
-    // —— 槽位管理表 key→行索引（审计：原实现每轮刷新线性扫 Tag，O(n²)）——
-    private readonly Dictionary<string, int> _slotMgmtRowIdx = new(StringComparer.Ordinal);
-    // —— stats 表 id→行索引（E-10：对齐 _slotMgmtRowIdx 模式，替代 FindStatRow 线性扫 Tag）——
-    private readonly Dictionary<long, DataGridViewRow> _statsRowIdx = new();
-    // —— 槽位日志（槽位绑定页下方，独立持久化 slot.log）——
-    private RichTextBox _txtSlotLog = null!;
 
-    // —— 侧边统计标签 ——
-    private Label _lblTokenSummary = null!;
-    private Label _lblSlotSummary = null!;
-    private Label _lblRestoreHit = null!;   // Restore 命中率卡片（3.1 可观测）
+
     // ==================== UI 构建 ====================
 
     private void BuildUi()
@@ -187,7 +99,7 @@ public partial class MainForm : Form
         var tabArea = BuildTabArea();
         var leftPanel = BuildLeftPanel();
         var titleBlock = BuildTitleBlock();
-        var statusPanel = BuildStatusPanel();
+        var statusPanel = _status.BuildPage();
 
         // 参数控件清单一次构建（审计：原实现每次 ApplyPhase 调用都重建数组）
         _paramControls = new Control[]
@@ -251,8 +163,6 @@ public partial class MainForm : Form
         int avail = _contentSplit.Width - _contentSplit.SplitterWidth;
         _contentSplit.SplitterDistance = Math.Max(300, (int)(avail * 0.8));
     }
-
-
 
     /// <summary>左侧边栏 (200px)：应用名 + Control Panel + Configuration + User Manual。
     /// 按钮带参考界面 PNG 图标（static/icon），悬停变亮，对齐 Auto_Pilot 侧边栏样式。</summary>
@@ -363,8 +273,6 @@ public partial class MainForm : Form
         return leftPanel;
     }
 
-
-
     /// <summary>在指定 Panel 中渲染 Markdown 文档（内嵌显示，不新开窗口）。</summary>
     private void ShowDocInPanel(Panel container, string title, string relPath)
     {
@@ -439,181 +347,17 @@ public partial class MainForm : Form
         var container = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
 
         var tabStats = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10) };
-        tabStats.Controls.Add(BuildStatsPanel());
+        tabStats.Controls.Add(_stats.BuildPage());
 
-        // 槽位绑定页：上方绑定表格 + 下方槽位日志（独立持久化 slot.log）
+        // 槽位绑定页：由 SlotPanelController 构建（上方绑定表格 + 下方槽位日志）
         var tabSlots = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10) };
-        _txtSlotLog = new RichTextBox
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            BorderStyle = BorderStyle.None, // 无边框，消除白边
-            BackColor = UiTheme.C_TextBg,
-            ForeColor = UiTheme.C_TextFg,
-            Font = new Font("Consolas", 9F),
-            ScrollBars = RichTextBoxScrollBars.Vertical,
-            WordWrap = false,
-        };
-        _gridSlots = UiTheme.MakeGrid();
-        _gridSlots.Dock = DockStyle.Top;
-        _gridSlots.Height = 260;
-        UiTheme.ApplyStatsGridStyle(_gridSlots);
-        _gridSlots.Columns.AddRange(UiTheme.MakeGridCol("亲和 Key"), UiTheme.MakeGridCol("应用"), UiTheme.MakeGridCol("槽位"), UiTheme.MakeGridCol("最后活跃"));
-        tabSlots.Controls.Add(_txtSlotLog);
-        tabSlots.Controls.Add(_gridSlots);
+        tabSlots.Controls.Add(_slot.BuildBindingsPage());
 
-        // 槽位管理页：DataGridView（强占/KV缓存 CheckBox 可编辑）
-        _tabSlotMgmt = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10) };
-        _gridSlotMgmt = UiTheme.MakeGrid();
-        _gridSlotMgmt.ReadOnly = false;
-        UiTheme.ApplyStatsGridStyle(_gridSlotMgmt);
-        _gridSlotMgmt.Columns.AddRange(
-            UiTheme.MakeGridCol("亲和 Key"), UiTheme.MakeGridCol("应用"), UiTheme.MakeGridCol("槽位"),
-            UiTheme.MakeCheckCol("强占"), UiTheme.MakeCheckCol("KV缓存"), UiTheme.MakeGridCol("最后活跃"));
-        _gridSlotMgmt.CellValueChanged += OnSlotMgmtCellChanged;
-        _tabSlotMgmt.Controls.Add(_gridSlotMgmt);
+        // 槽位管理页：由 SlotPanelController 构建（强占/KV缓存 CheckBox 可编辑）
+        var tabSlotMgmt = _slot.BuildMgmtPage();
 
-        // ════════════ 系统资源页：可滚动 Panel + TableLayoutPanel 纵向布局 ════════════
-        var tabRes = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10), AutoScroll = true };
-
-        // TableLayoutPanel：9 行（工具栏 + 4×标题/卡片），每行 AutoSize
-        var resLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            BackColor = UiTheme.C_Bg,
-            ColumnCount = 1,
-            RowCount = 9,
-            Padding = new Padding(0),
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        };
-        for (int r = 0; r < 9; r++)
-            resLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        // 行0：顶部工具栏（[手动刷新] 按钮 + 上次采集时间）
-        var toolbarPanel = new Panel { Dock = DockStyle.Fill, Height = 52, BackColor = UiTheme.C_Bg };
-        _btnRefreshRes = new Button
-        {
-            Text = "手动刷新",
-            Dock = DockStyle.Top,
-            Height = 32,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = UiTheme.C_Primary,
-            ForeColor = Color.Black,
-            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
-            Cursor = Cursors.Hand,
-        };
-        _btnRefreshRes.FlatAppearance.BorderSize = 0;
-        _lblResTimestamp = new Label
-        {
-            Text = "尚未采集",
-            Dock = DockStyle.Top,
-            Height = 20,
-            TextAlign = ContentAlignment.MiddleRight,
-            ForeColor = Color.FromArgb(0x88, 0x88, 0x88),
-            Font = new Font("Microsoft YaHei UI", 8F),
-        };
-        toolbarPanel.Controls.Add(_lblResTimestamp);
-        toolbarPanel.Controls.Add(_btnRefreshRes);
-        resLayout.Controls.Add(toolbarPanel, 0, 0);
-
-        // 行1：系统资源标题（独立行，不在卡片内）
-        var sysTitle = UiTheme.MakeCardTitle("系统资源");
-        resLayout.Controls.Add(sysTitle, 0, 1);
-
-        // 行2：系统资源卡片（本地采集：CPU / 内存 / 显存）
-        _sysCard = UiTheme.MakeCardPanel();
-        _lblSysRes = new Label
-        {
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Consolas", 10F),
-            ForeColor = UiTheme.C_TextFg,
-            Padding = new Padding(8, 4, 8, 4),
-            AutoSize = true,
-            MaximumSize = new Size(0, 0),
-        };
-        _sysCard.Controls.Add(_lblSysRes);
-        resLayout.Controls.Add(_sysCard, 0, 2);
-
-        // 行3：/slots 标题（独立行）
-        _lblSlotsTitle = UiTheme.MakeCardTitle("/slots 槽位状态");
-        resLayout.Controls.Add(_lblSlotsTitle, 0, 3);
-
-        // 行4：/slots 卡片（数据区 + Raw 按钮/TextBox）
-        _slotsCard = UiTheme.MakeCardPanel();
-        _lblSlotsBody = new Label
-        {
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.TopLeft,
-            Font = new Font("Consolas", 9F),
-            ForeColor = UiTheme.C_TextFg,
-            Padding = new Padding(8, 4, 8, 4),
-            AutoSize = true,
-            MaximumSize = new Size(0, 0),
-        };
-        _btnRawSlots = UiTheme.MakeRawButton();
-        _rawSlotsBox = UiTheme.MakeRawTextBox();
-        _slotsCard.Controls.Add(_lblSlotsBody);
-        _slotsCard.Controls.Add(_btnRawSlots);
-        _slotsCard.Controls.Add(_rawSlotsBox);
-        resLayout.Controls.Add(_slotsCard, 0, 4);
-
-        // 行5：/props 标题（独立行）
-        _lblPropsTitle = UiTheme.MakeCardTitle("/props 模型配置");
-        resLayout.Controls.Add(_lblPropsTitle, 0, 5);
-
-        // 行6：/props 卡片（两列表格数据区 + Raw 按钮/TextBox）
-        _propsCard = UiTheme.MakeCardPanel();
-        _tblPropsBody = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = UiTheme.C_Card,
-            ColumnCount = 2,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(4),
-        };
-        _tblPropsBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30f)); // 左列：标签
-        _tblPropsBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70f)); // 右列：值
-        _btnRawProps = UiTheme.MakeRawButton();
-        _rawPropsBox = UiTheme.MakeRawTextBox();
-        _propsCard.Controls.Add(_tblPropsBody);
-        _propsCard.Controls.Add(_btnRawProps);
-        _propsCard.Controls.Add(_rawPropsBox);
-        resLayout.Controls.Add(_propsCard, 0, 6);
-
-        // 行7：/metrics 标题（独立行）
-        _lblMetricsTitle = UiTheme.MakeCardTitle("/metrics 全局指标");
-        resLayout.Controls.Add(_lblMetricsTitle, 0, 7);
-
-        // 行8：/metrics 卡片（数据区 + Raw 按钮/TextBox）
-        _metricsCard = UiTheme.MakeCardPanel();
-        _lblMetricsBody = new Label
-        {
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.TopLeft,
-            Font = new Font("Consolas", 9F),
-            ForeColor = UiTheme.C_TextFg,
-            Padding = new Padding(8, 4, 8, 4),
-            AutoSize = true,
-            MaximumSize = new Size(0, 0),
-        };
-        _btnRawMetrics = UiTheme.MakeRawButton();
-        _rawMetricsBox = UiTheme.MakeRawTextBox();
-        _metricsCard.Controls.Add(_lblMetricsBody);
-        _metricsCard.Controls.Add(_btnRawMetrics);
-        _metricsCard.Controls.Add(_rawMetricsBox);
-        resLayout.Controls.Add(_metricsCard, 0, 8);
-
-        tabRes.Controls.Add(resLayout);
-
-        // 手动刷新按钮事件
-        _btnRefreshRes.Click += OnManualRefresh;
-        // Raw 折叠按钮事件
-        _btnRawSlots.Click += (s, e) => ToggleRaw(_btnRawSlots, _rawSlotsBox);
-        _btnRawProps.Click += (s, e) => ToggleRaw(_btnRawProps, _rawPropsBox);
-        _btnRawMetrics.Click += (s, e) => ToggleRaw(_btnRawMetrics, _rawMetricsBox);
+        // 系统资源页：由 MonitorPanelController 构建（本地采集 + llama.cpp 三卡片）
+        var tabRes = _monitor.BuildPage();
 
         // 配置管理页（纯配置面板）
         _tabConfig = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg, Padding = new Padding(10), AutoScroll = true };
@@ -647,7 +391,7 @@ public partial class MainForm : Form
 
         // 内容宿主：6 页叠放 + Visible 切换（_txtLog 直接作为一页，无中间包装 Panel）
         var host = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.C_Bg };
-        _tabPages = new Control[] { _logView.TxtLog, tabStats, tabSlots, _tabSlotMgmt, tabRes, _tabConfig, _docPanel };
+        _tabPages = new Control[] { _logView.TxtLog, tabStats, tabSlots, tabSlotMgmt, tabRes, _tabConfig, _docPanel };
         foreach (var p in _tabPages) host.Controls.Add(p);
 
         container.Controls.Add(host);
@@ -670,127 +414,6 @@ public partial class MainForm : Form
             _tabButtons[i].ForeColor = sel ? UiTheme.C_TextBg : Color.White;
         }
     }
-
-    /// <summary>右侧状态面板 (30% 列，原底部 SideStatsPanel 移入)：
-    /// 服务阶段 / 模块状态(绿红) / 系统资源 / 运行时长 / Token 统计 / 槽位绑定 / 思考模式，卡片纵向堆叠。</summary>
-    private Panel BuildStatusPanel()
-    {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = UiTheme.C_Frame,
-            Padding = new Padding(12),
-            AutoScroll = true,
-        };
-        // 单列表格：卡片撑满右列宽度 + 等高分行（缩放时按比例分配）
-        var grid = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            Margin = new Padding(0),
-            Padding = new Padding(0),
-            BackColor = Color.Transparent,
-        };
-
-        // 卡片工厂：#2d2d2d 底 + 标题行（加粗 11F，比内容大 2 号）+ 内容标签（垂直居中）
-        Panel MakeCard(string title, Label content)
-        {
-            var card = new Panel
-            {
-                BackColor = UiTheme.C_Card,
-                Padding = new Padding(12),
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 0, 0, 8),
-            };
-            var lblTitle = new Label
-            {
-                Text = title,
-                Dock = DockStyle.Top,
-                Height = 26,
-                ForeColor = UiTheme.C_Title,
-                Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold), // 加粗 + 比内容大 2 号
-                TextAlign = ContentAlignment.MiddleLeft,
-            };
-            content.Dock = DockStyle.Fill; // 等高分行下内容垂直居中
-            content.TextAlign = ContentAlignment.MiddleCenter;
-            card.Controls.Add(content);
-            card.Controls.Add(lblTitle); // 后添加 → Dock Top 位于最上
-            return card;
-        }
-
-        // 服务阶段卡片：显示调度器状态文本（"运行中 · N个在途任务…"），替代原侧边栏 _lblStatus
-        _lblStatus = new Label
-        {
-            Text = "空闲",
-            Font = new Font("Microsoft YaHei UI", 9F),
-            ForeColor = UiTheme.C_Aux,
-        };
-        _lblModuleState = new Label
-        {
-            Text = "网关 已停止",
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
-            ForeColor = Color.White,
-            BackColor = UiTheme.C_Red,
-            Padding = new Padding(8, 4, 8, 4),
-            // 注：AutoSize 已移除——等高分行下内容 Dock=Fill，标签撑满卡片（绿/红底色块）
-        };
-        _lblResSummary = new Label
-        {
-            Text = "CPU: — | 内存: —",
-            Font = new Font("Consolas", 9F),
-            ForeColor = UiTheme.C_TextFg,
-        };
-        _lblRunTime = new Label
-        {
-            Text = "—",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_Primary,
-        };
-        _lblTokenSummary = new Label
-        {
-            Text = "请求: 0",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_Primary,
-        };
-        _lblSlotSummary = new Label
-        {
-            Text = "槽位: —",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_TextFg,
-        };
-        _lblRestoreHit = new Label
-        {
-            Text = "Restore: 未启用",
-            Font = new Font("Consolas", 11F),
-            ForeColor = UiTheme.C_TextFg,
-        };
-        _lblThinking.Text = "思考: 极速";
-        _lblThinking.Font = new Font("Microsoft YaHei UI", 11F);
-
-        var cards = new[]
-        {
-            MakeCard("服务阶段", _lblStatus), // 调度器状态文本（运行中 · N个在途任务…）
-            MakeCard("模块状态", _lblModuleState),
-            MakeCard("系统资源", _lblResSummary),
-            MakeCard("运行时长", _lblRunTime),
-            MakeCard("Token 统计", _lblTokenSummary),
-            MakeCard("槽位绑定", _lblSlotSummary),
-            MakeCard("Restore 命中率", _lblRestoreHit), // 3.1 可观测：总命中率 + 误报率 + 最近一次明细
-            MakeCard("思考模式", _lblThinking),
-        };
-        for (int i = 0; i < cards.Length; i++)
-        {
-            // 等高分行：所有卡片高度相同，缩放时按比例分配（Percent 均分）
-            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / cards.Length));
-            grid.Controls.Add(cards[i], 0, i);
-        }
-
-        panel.Controls.Add(grid);
-        return panel;
-    }
-
-
-
 
     /// <summary>构建 Configuration 面板（14 项配置 + 浏览按钮）。字体白色，暗色背景。</summary>
     private Control BuildConfigPanel()
@@ -928,36 +551,4 @@ public partial class MainForm : Form
         return panel;
     }
 
-    /// <summary>构建统计面板（汇总行 + 表格 + 清空按钮）。暗色主题，白色文字。</summary>
-    private Control BuildStatsPanel()
-    {
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            Padding = new Padding(4),
-            BackColor = UiTheme.C_Bg,
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.Controls.Add(_lblSummary, 0, 0);
-        panel.Controls.Add(_btnClearStats, 1, 0);
-        panel.Controls.Add(_gridStats, 0, 1);
-        panel.SetColumnSpan(_gridStats, 2);
-
-        UiTheme.ApplyStatsGridStyle(_gridStats);
-        _gridStats.Columns.AddRange(
-            UiTheme.MakeGridCol("时间"),
-            UiTheme.MakeGridCol("输入tokens"),
-            UiTheme.MakeGridCol("输入速度(t/s)"),
-            UiTheme.MakeGridCol("输出tokens"),
-            UiTheme.MakeGridCol("输出速度(t/s)"),
-            UiTheme.MakeGridCol("命中率"),
-            UiTheme.MakeGridCol("f_sim_best"),
-            UiTheme.MakeGridCol("总耗时(s)"));
-
-        return panel;
-    }
 }
