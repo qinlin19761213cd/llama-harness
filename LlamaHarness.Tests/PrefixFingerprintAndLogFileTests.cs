@@ -19,18 +19,18 @@ public class PrefixFingerprintAndLogFileTests
     public void SameMessages_SameFingerprint()
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""},{""role"":""user"",""content"":""c""}]}");
-        var h1 = SmartScheduler.PrefixHash(obj);
+        var h1 = RequestProcessor.PrefixHash(obj);
         Assert.NotNull(h1);
-        Assert.Equal(h1, SmartScheduler.PrefixHash(obj)); // 确定性
+        Assert.Equal(h1, RequestProcessor.PrefixHash(obj)); // 确定性
     }
 
     [Fact]
     public void ContentChange_FingerprintChanges()
     {
         var json = @"{""messages"":[{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""},{""role"":""user"",""content"":""c""}]}";
-        var h1 = SmartScheduler.PrefixHash(Parse(json));
+        var h1 = RequestProcessor.PrefixHash(Parse(json));
         // 改第一条 content（前缀范围内）→ 指纹必须变化
-        var h2 = SmartScheduler.PrefixHash(Parse(json.Replace(@"""a""", @"""aa""")));
+        var h2 = RequestProcessor.PrefixHash(Parse(json.Replace(@"""a""", @"""aa""")));
         Assert.NotEqual(h1, h2);
     }
 
@@ -39,8 +39,8 @@ public class PrefixFingerprintAndLogFileTests
     {
         // 末条消息不参与前缀指纹（最新一轮是增量部分）
         var json = @"{""messages"":[{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""}]}";
-        var h1 = SmartScheduler.PrefixHash(Parse(json));
-        var h2 = SmartScheduler.PrefixHash(Parse(json.Replace(@"""b""", @"""bb""")));
+        var h1 = RequestProcessor.PrefixHash(Parse(json));
+        var h2 = RequestProcessor.PrefixHash(Parse(json.Replace(@"""b""", @"""bb""")));
         Assert.Equal(h1, h2);
     }
 
@@ -48,13 +48,13 @@ public class PrefixFingerprintAndLogFileTests
     public void SingleMessage_ReturnsNull()
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""a""}]}");
-        Assert.Null(SmartScheduler.PrefixHash(obj)); // 无状态单轮：无比对基线
+        Assert.Null(RequestProcessor.PrefixHash(obj)); // 无状态单轮：无比对基线
     }
 
     [Fact]
     public void NoMessages_ReturnsNull()
     {
-        Assert.Null(SmartScheduler.PrefixHash(Parse(@"{""model"":""m""}")));
+        Assert.Null(RequestProcessor.PrefixHash(Parse(@"{""model"":""m""}")));
     }
 
     // ---------- 3.3 日志噪声过滤（Classify） ----------

@@ -224,7 +224,7 @@ public sealed class StatusPanelView : UserControl
     /// <summary>更新思考模式标签文本和颜色（四档：极速/轻度/中度/深度）。</summary>
     public void UpdateThinkingLabel(SmartScheduler.ThinkingLevel level)
     {
-        _lblThinking.Text = $"思考: {SmartScheduler.LabelOf(level)}";
+        _lblThinking.Text = $"思考: {ThinkingMode.LabelOf(level)}";
         _lblThinking.ForeColor = level switch
         {
             SmartScheduler.ThinkingLevel.Off => Color.Silver,
@@ -236,7 +236,7 @@ public sealed class StatusPanelView : UserControl
 
     /// <summary>按当前启动附加参数刷新思考模式标签（仅显示；权威重置在 SmartScheduler 唤醒时执行）。</summary>
     public void RefreshThinkingLabel()
-        => UpdateThinkingLabel(SmartScheduler.DetermineInitialThinkingMode(_config.ExtraArgs));
+        => UpdateThinkingLabel(ThinkingMode.DetermineInitialThinkingMode(_config.ExtraArgs));
 
     /// <summary>3.1 Restore 命中率卡片：总命中率 + 误报率 + 最近一次明细；颜色按阈值（≥80% 绿 / &lt;80% 黄 / &lt;50% 红）。</summary>
     public void UpdateRestoreCard()

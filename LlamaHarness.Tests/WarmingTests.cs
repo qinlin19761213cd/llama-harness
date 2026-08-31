@@ -14,37 +14,37 @@ public class WarmingTests
     public void PickWarmSlot_FirstFreeSlot()
     {
         // slot0 绑定 KV 快照 → 选 slot1
-        Assert.Equal(1, SmartScheduler.PickWarmSlot(2, new[] { 0 }));
+        Assert.Equal(1, SchedulerUtils.PickWarmSlot(2, new[] { 0 }));
     }
 
     [Fact]
     public void PickWarmSlot_AllBound_ReturnsMinusOne()
     {
         // 全部槽位均绑定 KV 快照 → -1（跳过预热，防污染已恢复 KV）
-        Assert.Equal(-1, SmartScheduler.PickWarmSlot(2, new[] { 0, 1 }));
-        Assert.Equal(-1, SmartScheduler.PickWarmSlot(2, Enumerable.Range(0, 2)));
+        Assert.Equal(-1, SchedulerUtils.PickWarmSlot(2, new[] { 0, 1 }));
+        Assert.Equal(-1, SchedulerUtils.PickWarmSlot(2, Enumerable.Range(0, 2)));
     }
 
     [Fact]
     public void PickWarmSlot_NoBindings_PicksZero()
     {
         // 无绑定（新进程首唤醒）→ slot0
-        Assert.Equal(0, SmartScheduler.PickWarmSlot(2, Array.Empty<int>()));
+        Assert.Equal(0, SchedulerUtils.PickWarmSlot(2, Array.Empty<int>()));
     }
 
     [Fact]
     public void PickWarmSlot_SkipsBoundInOrder()
     {
         // bound {0} → 1；bound {0,1} → 2（按槽位号顺序取第一个空闲）
-        Assert.Equal(1, SmartScheduler.PickWarmSlot(3, new[] { 0 }));
-        Assert.Equal(2, SmartScheduler.PickWarmSlot(3, new[] { 0, 1 }));
-        Assert.Equal(0, SmartScheduler.PickWarmSlot(3, new[] { 1, 2 }));
+        Assert.Equal(1, SchedulerUtils.PickWarmSlot(3, new[] { 0 }));
+        Assert.Equal(2, SchedulerUtils.PickWarmSlot(3, new[] { 0, 1 }));
+        Assert.Equal(0, SchedulerUtils.PickWarmSlot(3, new[] { 1, 2 }));
     }
 
     [Fact]
     public void PickWarmSlot_ZeroParallel_ReturnsMinusOne()
     {
         // 边界：parallel=0（无槽位）→ -1
-        Assert.Equal(-1, SmartScheduler.PickWarmSlot(0, Array.Empty<int>()));
+        Assert.Equal(-1, SchedulerUtils.PickWarmSlot(0, Array.Empty<int>()));
     }
 }

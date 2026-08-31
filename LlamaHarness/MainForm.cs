@@ -50,7 +50,7 @@ public partial class MainForm : Form
 
         // 启动时按当前附加参数显示初始思考模式（唤醒时会按实际启动参数权威重置）
         _status.RefreshThinkingLabel();
-        AppendLog($"思考模式初始状态：「{SmartScheduler.LabelOf(SmartScheduler.DetermineInitialThinkingMode(_config.ExtraArgs))}」");
+        AppendLog($"思考模式初始状态：「{ThinkingMode.LabelOf(ThinkingMode.DetermineInitialThinkingMode(_config.ExtraArgs))}」");
 
         if (loadError != null)
             AppendLog(loadError);
