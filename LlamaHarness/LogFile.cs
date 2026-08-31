@@ -24,6 +24,9 @@ public static class LogFile
         new(() => new LogPipeline(LogDir, QueueFullPolicy.DropNewest), true);
 
     /// <summary>设置队列满丢弃策略（运行时生效，UI 配置页）。</summary>
+    /// <summary>v2.22 可观测：日志管道性能快照（丢弃行数 / flush 平均耗时）。</summary>
+    public static (long Dropped, double FlushAvgMs) PerfSnapshot() => _pipeline.Value.PerfSnapshot();
+
     public static void Configure(QueueFullPolicy policy)
     {
         _pipeline.Value.Queue.Policy = policy;

@@ -188,6 +188,12 @@ public sealed class LogPipeline : IDisposable
 {
     public const int DefaultQueueCapacity = 50_000;
 
+    // v2.22 可观测：日志管道累积指标（写线程更新 + _perfGate 保护，PerfSnapshot 供采样器读）
+    private long _totalDropped;
+    private long _flushCount;
+    private double _flushSumMs;
+    private readonly object _perfGate = new();
+
     /// <summary>四流大小上限（字节）：main/slot/dump 2MB、warn 5MB，各自独立轮切互不干扰。</summary>
     private const long MaxMainBytes = 2_000_000;
     private const long MaxWarnBytes = 5_000_000;
@@ -219,6 +225,13 @@ public sealed class LogPipeline : IDisposable
     public long IoFailCount => Interlocked.Read(ref _ioFailCount);
 
     /// <summary>当前队列积压行数。</summary>
+    /// <summary>v2.22 可观测：日志管道累积指标快照（丢弃总行数 / flush 平均耗时 ms）。</summary>
+    public (long Dropped, double FlushAvgMs) PerfSnapshot()
+    {
+        lock (_perfGate)
+            return (_totalDropped, _flushCount > 0 ? _flushSumMs / _flushCount : 0);
+    }
+
     public int QueueCount => _queue.Count;
 
     /// <summary>有界队列（public 供测试与运行时切换 policy）。</summary>
@@ -286,7 +299,10 @@ public sealed class LogPipeline : IDisposable
         // [LOG-PIPE] 丢弃埋点（直接写 main，不经队列防递归）
         var dropped = _queue.TakeDroppedDelta();
         if (dropped > 0)
+        {
+            lock (_perfGate) _totalDropped += dropped; // v2.22 可观测
             WriteDirectSafe($"[LOG-PIPE] dropped={dropped} policy={_queue.Policy}{Environment.NewLine}");
+        }
 
         // Flush 双阈值判定（四流一起刷，与旧 150ms 定时器同节奏）
         var elapsedMs = (long)(DateTime.UtcNow - _lastFlushUtc).TotalMilliseconds;
@@ -295,10 +311,12 @@ public sealed class LogPipeline : IDisposable
             Math.Max(_slotWriter.PendingBytes, _dumpWriter.PendingBytes));
         if (FlushPolicy.ShouldFlush(elapsedMs, maxPending))
         {
+            var fsw = System.Diagnostics.Stopwatch.StartNew(); // v2.22 可观测：flush 单次耗时
             _mainWriter.Flush();
             _warnWriter.Flush();
             _slotWriter.Flush();
             _dumpWriter.Flush();
+            lock (_perfGate) { _flushCount++; _flushSumMs += fsw.Elapsed.TotalMilliseconds; }
             _lastFlushUtc = DateTime.UtcNow;
         }
     }

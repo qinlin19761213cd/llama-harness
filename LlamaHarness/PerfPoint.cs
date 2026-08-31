@@ -52,6 +52,12 @@ public readonly struct PerfPoint
     /// <summary>强占触发累计次数（autoPre 冻结槽位）。</summary>
     public int? PreemptTrigger { get; init; }
 
+    // —— 日志管道累积型（LogPipeline 会话计数快照，1s）——
+    /// <summary>队列丢弃累计行数。</summary>
+    public long? LogDroppedLines { get; init; }
+    /// <summary>flush 平均耗时（ms）。</summary>
+    public double? LogFlushCostMs { get; init; }
+
     /// <summary>该点是否含系统层有效指标。</summary>
     public bool HasSystem => CpuPercent != null || MemUsedGb != null || VramUsedMb != null;
     /// <summary>该点是否含 llama.cpp 层有效指标。</summary>
