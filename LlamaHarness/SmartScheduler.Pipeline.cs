@@ -19,7 +19,7 @@ public partial class SmartScheduler
     private int _dumpPrivacyWarned;
     /// <summary>把请求原样转发到后端；ResponseHeadersRead + CopyToAsync 保证 SSE/流式响应直通。
     /// 审计 O-8：按管道阶段拆分为 读体 → 网关预处理 → 转发管道 → 完成清理 四段，本方法仅做编排。</summary>
-    private async Task ForwardAsync(HttpListenerContext ctx)
+    private async Task ForwardAsync(HttpListenerContext ctx, string? rtId) // v2.21：性能埋点 id（仅推理请求非空）
     {
         var req = ctx.Request;
         var uri = new Uri($"http://localhost:{_backendPort}{req.RawUrl}");
@@ -56,14 +56,16 @@ public partial class SmartScheduler
         }
 
         // ③ 转发后端 + 响应管道 + 完成清理
-        await SendAndPipeAsync(ctx, uri, path, req, bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root);
+        await SendAndPipeAsync(ctx, uri, path, req, bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root, rtId);
     }
 
     /// <summary>转发阶段：构造后端请求（过滤逐跳头）→ 连接异常 500ms 重试一次 → 400 上下文超限自愈 → 响应管道（崩溃恢复/断点快照清理/客户端断开兜底）。</summary>
     private async Task SendAndPipeAsync(
         HttpListenerContext ctx, Uri uri, string path, HttpListenerRequest req,
-        byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root)
+        byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root, string? rtId) // v2.21：性能埋点
     {
+        if (rtId != null) _timing.MarkSent(rtId); // v2.21 打点：网关预处理完成（读体+路由/裁剪/流式改写），即将发向后端
+
         using var msg = RequestProcessor.BuildBackendRequest(req, uri, bodyBytes);
 
         HttpResponseMessage resp = await TryConnectWithRetryAsync(msg);

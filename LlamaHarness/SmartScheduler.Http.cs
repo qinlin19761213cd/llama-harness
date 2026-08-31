@@ -142,13 +142,18 @@ public partial class SmartScheduler
         string? taskApp = taskKey == null ? null : affTask?.AppNameOf(taskKey);
         int taskSeq = _inflightTracker.Register(req.HttpMethod, req.Url?.AbsolutePath ?? req.RawUrl ?? "?", taskApp);
         InFlightChanged?.Invoke();
+        // v2.21 性能埋点：仅推理请求计时（四段时延：t_recv→t_ready→t_sent→t_complete）
+        string? rtId = null;
+        if (isInference) rtId = _timing.Begin(taskApp ?? "?", req.Url?.AbsolutePath ?? req.RawUrl ?? "?");
         try
         {
             // 首请求排队等待唤醒完成（共享同一唤醒任务，防多进程冲突）
             await EnsureRunningAsync();
+            if (rtId != null) _timing.MarkReady(rtId); // 打点：唤醒/排队完成（后端就绪）
             // 只有真实推理请求才刷新闲置计时；探测类请求不算使用
             if (isInference) Touch();
-            await ForwardAsync(ctx);       // 代理转发到后端 llama-server（流式直通）
+            await ForwardAsync(ctx, rtId);       // 代理转发到后端 llama-server（流式直通）
+            if (rtId != null) _timing.Complete(rtId, success: true); // 打点：成功完成
             if (isInference) Touch();      // 请求完成：再次刷新倒计时
         }
         catch (Exception ex)
@@ -156,6 +161,7 @@ public partial class SmartScheduler
             // 带上内层异常细节，便于定位（如连接重置 vs 超时）
             var detail = ex.InnerException != null ? $"（内层：{ex.InnerException.Message}）" : "";
             Log?.Invoke($"请求处理失败：{ex.Message}{detail}");
+            if (rtId != null) _timing.Complete(rtId, success: false); // 打点：失败完成
             RequestProcessor.WriteError(ctx, 503, ex.Message);
         }
         finally

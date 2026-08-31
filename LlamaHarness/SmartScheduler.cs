@@ -188,6 +188,12 @@ public sealed partial class SmartScheduler : IDisposable
     /// <summary>在途请求计数（含排队等待唤醒）；供性能采样/监控读取（v2.21）。</summary>
     public int InflightCount => Volatile.Read(ref _inflight);
 
+    /// <summary>请求时延追踪器（v2.21 性能埋点）：四段时延 + 最近请求环形缓冲 + 会话聚合统计。</summary>
+    private readonly RequestTimingTracker _timing = new();
+
+    /// <summary>请求时延追踪器（供 perf.log / 监控页订阅 Completed 与读 Recent/Stats）。</summary>
+    public RequestTimingTracker Timing => _timing;
+
     private void OnServerOutput(string line)
     {
         Log?.Invoke(line);
