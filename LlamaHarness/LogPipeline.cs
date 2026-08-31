@@ -222,14 +222,19 @@ public sealed class LogPipeline : IDisposable
     /// <summary>有界队列（public 供测试与运行时切换 policy）。</summary>
     public BoundedLineQueue Queue => _queue;
 
+    private const string MainLogFile = "harness.log";
+    private const string WarnLogFile = "warn_error.log";
+    private const string SlotLogFile = "slot.log";
+    private const string DumpLogFile = "request_dump.log";
+
     public LogPipeline(string logDir, QueueFullPolicy policy, int joinTimeoutMs = 3000)
     {
         _joinTimeoutMs = joinTimeoutMs;
         _queue = new BoundedLineQueue(DefaultQueueCapacity) { Policy = policy };
-        _mainWriter = new LogStreamWriter(Path.Combine(logDir, "harness.log"));
-        _warnWriter = new LogStreamWriter(Path.Combine(logDir, "warn_error.log"));
-        _slotWriter = new LogStreamWriter(Path.Combine(logDir, "slot.log"));
-        _dumpWriter = new LogStreamWriter(Path.Combine(logDir, "request_dump.log"));
+        _mainWriter = new LogStreamWriter(Path.Combine(logDir, MainLogFile));
+        _warnWriter = new LogStreamWriter(Path.Combine(logDir, WarnLogFile));
+        _slotWriter = new LogStreamWriter(Path.Combine(logDir, SlotLogFile));
+        _dumpWriter = new LogStreamWriter(Path.Combine(logDir, DumpLogFile));
         _writerThread = new Thread(WriterLoop) { IsBackground = true, Name = "LogPipeline-Writer" };
         _writerThread.Start();
         // [LOG-PIPE] 启动埋点（约束 C-4：组件启用状态）

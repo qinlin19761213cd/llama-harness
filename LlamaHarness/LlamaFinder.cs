@@ -41,13 +41,7 @@ public static class LlamaFinder
         }
 
         // 3. 常见安装位置
-        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "llama-server.exe"),
-            @"C:\llama.cpp\build\bin\Release\llama-server.exe",
-            Path.Combine(userProfile, "llama.cpp", "build", "bin", "Release", "llama-server.exe"),
-        };
+        var candidates = AppPaths.BackendExeCandidates();
         foreach (var c in candidates)
         {
             try

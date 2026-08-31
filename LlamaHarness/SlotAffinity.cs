@@ -20,7 +20,7 @@ public sealed class SlotAffinity
 
     /// <summary>绑定表持久化文件（exe 同目录）。</summary>
     /// <summary>槽位绑定持久化路径：项目目录下 config/slot_bindings.json。</summary>
-    private static readonly string BindingsPath = Path.Combine(AppContext.BaseDirectory, "config", "slot_bindings.json");
+    private static readonly string BindingsPath = AppPaths.SlotBindingsJson;
 
     internal struct Binding
     {
@@ -357,18 +357,11 @@ public sealed class SlotAffinity
     }
 
     /// <summary>持久化绑定表（含应用名/强占/KV缓存配置）。</summary>
-    /// <summary>确保 config/ 目录存在（幂等）。</summary>
-    private static void EnsureConfigDir()
-    {
-        var dir = Path.Combine(AppContext.BaseDirectory, "config");
-        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-    }
-
     private void Save()
     {
         try
         {
-            EnsureConfigDir();
+            AppPaths.EnsureConfigDir();
             var bindings = new System.Text.Json.Nodes.JsonObject();
             foreach (var kv in _bindings)
             {

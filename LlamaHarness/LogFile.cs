@@ -12,7 +12,7 @@ public static class LogFile
     private static readonly object _recentGate = new();
 
     /// <summary>日志目录：项目目录下 logs/（写入器首次打开时自动创建）。</summary>
-    internal static string LogDir => Path.Combine(AppContext.BaseDirectory, "logs");
+    internal static string LogDir => AppPaths.LogDir;
 
     /// <summary>最近 N 条带时间戳日志（生产侧更新），供警告/错误块与 /__status__ recent_logs。</summary>
     private static readonly Queue<string> _recent = new();

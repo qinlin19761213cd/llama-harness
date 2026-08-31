@@ -80,7 +80,7 @@ public class AppConfig
     public QueueFullPolicy LogQueueFullPolicy { get; set; } = QueueFullPolicy.DropNewest;
 
     /// <summary>配置文件路径：项目目录下 config/config.json。</summary>
-    private static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "config", "config.json");
+    private static string ConfigPath => AppPaths.ConfigJson;
 
     /// <summary>审计：config.json 字段命名统一 snake_case_lower（此前仅 schema_version 为 snake，其余 PascalCase）。</summary>
     private sealed class SnakeCaseNamingPolicy : System.Text.Json.JsonNamingPolicy
@@ -112,11 +112,7 @@ public class AppConfig
     private static readonly JsonSerializerOptions LegacyJsonOpts = new() { WriteIndented = true };
 
     /// <summary>确保 config/ 目录存在（幂等）。</summary>
-    private static void EnsureConfigDir()
-    {
-        var dir = Path.Combine(AppContext.BaseDirectory, "config");
-        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-    }
+    private static void EnsureConfigDir() => AppPaths.EnsureConfigDir();
 
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>
     public static AppConfig Load(out string? loadError)

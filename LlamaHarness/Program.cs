@@ -46,9 +46,8 @@ internal static class Program
     {
         try
         {
-            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
-            if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
-            File.AppendAllText(Path.Combine(logDir, "unhandled.log"),
+            AppPaths.EnsureLogDir();
+            File.AppendAllText(AppPaths.UnhandledLog,
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}\n\n");
         }
         catch

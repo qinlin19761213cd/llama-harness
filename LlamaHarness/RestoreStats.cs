@@ -72,7 +72,7 @@ public sealed class RestoreStats
     public RestoreStats(string? statsPath = null)
     {
         _statsPath = string.IsNullOrEmpty(statsPath)
-            ? Path.Combine(AppContext.BaseDirectory, "config", "restore_stats.json")
+            ? AppPaths.RestoreStatsJson
             : statsPath!;
         Load();
     }

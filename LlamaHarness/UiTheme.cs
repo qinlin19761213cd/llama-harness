@@ -30,7 +30,7 @@ public static class UiTheme
     public static Image? LoadIcon(string fileName)
     {
         if (IconCache.TryGetValue(fileName, out var cached)) return cached;
-        var path = Path.Combine(AppContext.BaseDirectory, "static", "icon", fileName);
+        var path = AppPaths.IconFile(fileName);
         try
         {
             if (File.Exists(path))
