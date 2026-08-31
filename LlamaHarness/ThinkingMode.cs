@@ -70,89 +70,115 @@ public static class ThinkingMode
         // 思考文本混入 tool-call JSON 后导致 pi-ai 严格 JSON.parse 报 PI_AI_ERROR。
         try
         {
-            if (obj["messages"] is System.Text.Json.Nodes.JsonArray msgs && msgs.Count > 0)
-            {
-                for (int i = msgs.Count - 1; i >= 0; i--)
-                {
-                    if (msgs[i] is not System.Text.Json.Nodes.JsonObject msgObj) continue;
-                    // role 提取：JsonNode.ToString() 对字符串节点返回不带引号的原始值
-                    string? roleStr = msgObj["role"]?.ToString();
-                    if (!string.Equals(roleStr, "user", StringComparison.OrdinalIgnoreCase)) break;
+            // ① 末条 user 指令扫描与剥离（命中 → 更新档位 + 剥指令文本）
+            ScanAndStripDirective(obj, ref level);
 
-                    // content 提取：仅处理字符串类型（数组/对象跳过）
-                    var contentNode = msgObj["content"];
-                    if (contentNode == null) continue;
-                    // AsObject() 对非对象节点抛异常，用 try-catch 安全判断
-                    bool isContainer = false;
-                    try { isContainer = contentNode.AsObject() != null || contentNode.AsArray() != null; } catch { }
-                    if (isContainer) continue;
-                    string contentStr = contentNode.ToString();
+            // ② 统一清洗：移除客户端自带的思考相关字段（网关层统一管控）
+            bool cleaned = CleanClientThinkingFields(obj);
 
-                    bool hitOn = contentStr.Contains("开启思考模式");
-                    bool hitOff = contentStr.Contains("关闭思考模式");
-                    bool hitLow = contentStr.Contains("开启轻度推理模式");
-                    bool hitMid = contentStr.Contains("开启中度推理模式");
-                    bool hitDeep = contentStr.Contains("开启深度推理模式");
-                    if (!hitOn && !hitOff && !hitLow && !hitMid && !hitDeep) continue;
-
-                    // 剥离全部命中指令，保留其余内容；若消息只剩指令本身，填确认提示避免空消息让模型困惑
-                    string stripped = contentStr;
-                    if (hitOn) { level = ThinkingLevel.XHigh; stripped = stripped.Replace("开启思考模式", ""); }
-                    if (hitOff) { level = ThinkingLevel.Off; stripped = stripped.Replace("关闭思考模式", ""); }
-                    if (hitLow) { level = ThinkingLevel.Low; stripped = stripped.Replace("开启轻度推理模式", ""); }
-                    if (hitMid) { level = ThinkingLevel.Medium; stripped = stripped.Replace("开启中度推理模式", ""); }
-                    if (hitDeep) { level = ThinkingLevel.XHigh; stripped = stripped.Replace("开启深度推理模式", ""); }
-                    msgObj["content"] = string.IsNullOrWhiteSpace(stripped.Trim())
-                        ? "（思考/推理模式已切换，请简短确认）"
-                        : stripped.Trim();
-                    break;
-                }
-            }
-
-            // 2. 统一清洗：移除客户端自带的思考相关字段（网关层统一管控）
-            // DSH 客户端发送的思考字段：顶层 "thinking" / "reasoning_effort" + chat_template_kwargs 内字段
-            bool cleaned = false;
-            // 顶层字段（DSH 格式）
-            if (obj.Remove("thinking")) cleaned = true;
-            if (obj.Remove("reasoning_effort")) cleaned = true;
-            // chat_template_kwargs 内字段（部分客户端格式）
-            if (obj["chat_template_kwargs"] is System.Text.Json.Nodes.JsonObject ctkExisting)
-            {
-                if (ctkExisting.Remove("reasoning_effort")) cleaned = true;
-                if (ctkExisting.Remove("enable_thinking")) cleaned = true;
-                // 清洗后若 chat_template_kwargs 为空对象，移除空壳（避免下发无意义字段）
-                if (ctkExisting.Count == 0) obj.Remove("chat_template_kwargs");
-            }
-
-            // 3. 按状态机注入：Off → 显式 enable_thinking=false；Low/Medium/XHigh → reasoning_effort + enable_thinking=true
-            System.Text.Json.Nodes.JsonObject ctk;
-            if (obj["chat_template_kwargs"] is System.Text.Json.Nodes.JsonObject existing)
-            {
-                ctk = existing;
-            }
-            else
-            {
-                ctk = new System.Text.Json.Nodes.JsonObject();
-                obj["chat_template_kwargs"] = ctk;
-            }
-            if (level == ThinkingLevel.Off)
-            {
-                ctk["enable_thinking"] = false; // 关键：混合思考模型必须显式关闭，否则默认仍思考
-            }
-            else
-            {
-                ctk["reasoning_effort"] = EffortOf(level);
-                ctk["enable_thinking"] = true;
-            }
-
-            // 清洗说明（用于日志）
-            if (cleaned)
-                effortFix = "已清洗客户端思考参数（thinking/reasoning_effort/enable_thinking），按网关状态机重新注入";
+            // ③ 按状态机注入：Off → enable_thinking=false；Low/Medium/XHigh → reasoning_effort + enable_thinking=true
+            ApplyThinkingState(obj, level, cleaned, ref effortFix);
         }
         catch
         {
             // 结构异常：尽力而为，保留已完成的改写（等价旧实现透传语义）
         }
+    }
+
+    /// <summary>末条 user 指令扫描与剥离（InjectThinkingMode 子段①）：
+    /// 「开启思考模式」→ XHigh；「关闭思考模式」→ Off；「开启轻度/中度/深度推理模式」→ Low/Medium/XHigh。
+    /// 命中 → 更新档位 ref，剥离指令文本（避免模型把指令当问题回答）。</summary>
+    private static void ScanAndStripDirective(JsonObject obj, ref ThinkingLevel level)
+    {
+        if (obj["messages"] is System.Text.Json.Nodes.JsonArray msgs && msgs.Count > 0)
+        {
+            for (int i = msgs.Count - 1; i >= 0; i--)
+            {
+                if (msgs[i] is not System.Text.Json.Nodes.JsonObject msgObj) continue;
+                // role 提取：JsonNode.ToString() 对字符串节点返回不带引号的原始值
+                string? roleStr = msgObj["role"]?.ToString();
+                if (!string.Equals(roleStr, "user", StringComparison.OrdinalIgnoreCase)) break;
+
+                // content 提取：仅处理字符串类型（数组/对象跳过）
+                var contentNode = msgObj["content"];
+                if (contentNode == null) continue;
+                // AsObject() 对非对象节点抛异常，用 try-catch 安全判断
+                bool isContainer = false;
+                try { isContainer = contentNode.AsObject() != null || contentNode.AsArray() != null; } catch { }
+                if (isContainer) continue;
+                string contentStr = contentNode.ToString();
+
+                bool hitOn = contentStr.Contains("开启思考模式");
+                bool hitOff = contentStr.Contains("关闭思考模式");
+                bool hitLow = contentStr.Contains("开启轻度推理模式");
+                bool hitMid = contentStr.Contains("开启中度推理模式");
+                bool hitDeep = contentStr.Contains("开启深度推理模式");
+                if (!hitOn && !hitOff && !hitLow && !hitMid && !hitDeep) continue;
+
+                // 剥离全部命中指令，保留其余内容；若消息只剩指令本身，填确认提示避免空消息让模型困惑
+                string stripped = contentStr;
+                if (hitOn) { level = ThinkingLevel.XHigh; stripped = stripped.Replace("开启思考模式", ""); }
+                if (hitOff) { level = ThinkingLevel.Off; stripped = stripped.Replace("关闭思考模式", ""); }
+                if (hitLow) { level = ThinkingLevel.Low; stripped = stripped.Replace("开启轻度推理模式", ""); }
+                if (hitMid) { level = ThinkingLevel.Medium; stripped = stripped.Replace("开启中度推理模式", ""); }
+                if (hitDeep) { level = ThinkingLevel.XHigh; stripped = stripped.Replace("开启深度推理模式", ""); }
+                msgObj["content"] = string.IsNullOrWhiteSpace(stripped.Trim())
+                    ? "（思考/推理模式已切换，请简短确认）"
+                    : stripped.Trim();
+                break;
+            }
+        }
+    }
+
+    /// <summary>统一清洗客户端自带的思考字段（InjectThinkingMode 子段②）：
+    /// 顶层 "thinking"/"reasoning_effort" + chat_template_kwargs 内 reasoning_effort/enable_thinking；
+    /// 清洗后空壳 chat_template_kwargs 一并移除（避免下发无意义字段）。返回是否有清洗动作。</summary>
+    private static bool CleanClientThinkingFields(JsonObject obj)
+    {
+        // DSH 客户端发送的思考字段：顶层 "thinking" / "reasoning_effort" + chat_template_kwargs 内字段
+        bool cleaned = false;
+        // 顶层字段（DSH 格式）
+        if (obj.Remove("thinking")) cleaned = true;
+        if (obj.Remove("reasoning_effort")) cleaned = true;
+        // chat_template_kwargs 内字段（部分客户端格式）
+        if (obj["chat_template_kwargs"] is System.Text.Json.Nodes.JsonObject ctkExisting)
+        {
+            if (ctkExisting.Remove("reasoning_effort")) cleaned = true;
+            if (ctkExisting.Remove("enable_thinking")) cleaned = true;
+            // 清洗后若 chat_template_kwargs 为空对象，移除空壳（避免下发无意义字段）
+            if (ctkExisting.Count == 0) obj.Remove("chat_template_kwargs");
+        }
+        return cleaned;
+    }
+
+    /// <summary>按状态机注入（InjectThinkingMode 子段③）：Off → 显式 enable_thinking=false；
+    /// Low/Medium/XHigh → reasoning_effort + enable_thinking=true；有清洗则写入 effortFix 说明。</summary>
+    private static void ApplyThinkingState(JsonObject obj, ThinkingLevel level, bool cleaned, ref string? effortFix)
+    {
+        // 按状态机注入：Off → 显式 enable_thinking=false；Low/Medium/XHigh → reasoning_effort + enable_thinking=true
+        System.Text.Json.Nodes.JsonObject ctk;
+        if (obj["chat_template_kwargs"] is System.Text.Json.Nodes.JsonObject existing)
+        {
+            ctk = existing;
+        }
+        else
+        {
+            ctk = new System.Text.Json.Nodes.JsonObject();
+            obj["chat_template_kwargs"] = ctk;
+        }
+        if (level == ThinkingLevel.Off)
+        {
+            ctk["enable_thinking"] = false; // 关键：混合思考模型必须显式关闭，否则默认仍思考
+        }
+        else
+        {
+            ctk["reasoning_effort"] = EffortOf(level);
+            ctk["enable_thinking"] = true;
+        }
+
+        // 清洗说明（用于日志）
+        if (cleaned)
+            effortFix = "已清洗客户端思考参数（thinking/reasoning_effort/enable_thinking），按网关状态机重新注入";
     }
 
     /// <summary>注入 n_slots 固定槽位路由（llama.cpp 多槽特性）。E-1 DOM 版：原地改树。

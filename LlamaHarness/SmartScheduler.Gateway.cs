@@ -157,45 +157,72 @@ public partial class SmartScheduler
         int? routedSlot = slot;
         string? routedKey = key;
 
-        // §4.5 Tool 链会话锁定：末条消息 role=tool → agent 工具循环进行中 → 锁槽位防驱逐；循环结束自动解锁
-        if (key != null && root != null)
-        {
-            bool inToolLoop = RequestProcessor.DetectToolLoop(root);
-            bool didLock = false, didUnlock = false;
-            // O-15：锁内只做 _toolLockedKeys 集合判定；aff 调用（自带内部锁 + 文件 I/O）全部移出，消除锁嵌套
-            bool alreadyPreemptive = aff.IsPreemptive(key);
-            lock (_kvStateGate)
-            {
-                if (inToolLoop)
-                {
-                    if (!_toolLockedKeys.Contains(key) && !alreadyPreemptive)
-                    {
-                        _toolLockedKeys.Add(key);
-                        didLock = true;
-                    }
-                }
-                else if (_toolLockedKeys.Remove(key))
-                {
-                    didUnlock = true;
-                }
-            }
-            if (didLock)
-            {
-                aff.MarkToolLocked(key); // 标记到 SlotAffinity（驱逐优先级：Tool 锁定 > 手动/自动强占）
-                aff.SetPreemptive(key, true); // 移出锁外（O-15）
-                EmitSlot($"[KV-LOCK] Tool 链会话锁定：{key} → slot{slot}（强占，不驱逐）");
-            }
-            else if (didUnlock)
-            {
-                aff.UnmarkToolLocked(key);
-                aff.SetPreemptive(key, false);
-                EmitSlot($"[KV-UNLOCK] Tool 链结束，解除锁定：{key}");
-            }
-        }
+        // ① §4.5 Tool 链会话锁定：末条消息 role=tool → 锁槽位防驱逐；循环结束自动解锁
+        HandleToolLoopLock(aff, root, key, slot);
 
         var kv = _kvCache;
 
-        // KV Cache：驱逐前 save（仅当被驱逐者的 KvCache=true；evicted != null 已蕴含 evictedSlot 有效，SlotAffinity 仅驱逐时置位）
+        // ② KV Cache 生命周期：驱逐前 save（仅被驱逐者 KvCache=true）→ restore 自愈（isNew 重绑定 / 进程重启后首次使用）
+        bool didRestore = await HandleEvictAndRestoreAsync(kv, evicted, evictedSlot, evictedKvCache, key, slot, isNew);
+
+        if (isNew)
+        {
+            var evt = $"槽位绑定：{key} → slot{slot}{(evicted != null ? $"（驱逐 {evicted}）" : "")}";
+            EmitSlot(evt);
+            SlotBindingChanged?.Invoke();
+        }
+        // E-1：n_slots 注入直接改树（已有 n_slots 时不覆盖，尊重客户端显式指定）
+        if (root != null)
+            ThinkingModeHelper.InjectNSlots(root, slot);
+        return (routedSlot, routedKey, didRestore);
+    }
+
+    /// <summary>§4.5 Tool 链会话锁定（ApplySlotAffinityAsync 子段①）：末条消息 role=tool →
+    /// 锁槽位防驱逐（强占），循环结束自动解锁。O-15：锁内只做 _toolLockedKeys 集合判定；
+    /// aff 调用（自带内部锁 + 文件 I/O）全部移出，消除锁嵌套。</summary>
+    private void HandleToolLoopLock(SlotAffinity aff, JsonObject? root, string? key, int slot)
+    {
+        if (key == null || root == null) return;
+        bool inToolLoop = RequestProcessor.DetectToolLoop(root);
+        bool didLock = false, didUnlock = false;
+        bool alreadyPreemptive = aff.IsPreemptive(key);
+        lock (_kvStateGate)
+        {
+            if (inToolLoop)
+            {
+                if (!_toolLockedKeys.Contains(key) && !alreadyPreemptive)
+                {
+                    _toolLockedKeys.Add(key);
+                    didLock = true;
+                }
+            }
+            else if (_toolLockedKeys.Remove(key))
+            {
+                didUnlock = true;
+            }
+        }
+        if (didLock)
+        {
+            aff.MarkToolLocked(key); // 标记到 SlotAffinity（驱逐优先级：Tool 锁定 > 手动/自动强占）
+            aff.SetPreemptive(key, true); // 移出锁外（O-15）
+            EmitSlot($"[KV-LOCK] Tool 链会话锁定：{key} → slot{slot}（强占，不驱逐）");
+        }
+        else if (didUnlock)
+        {
+            aff.UnmarkToolLocked(key);
+            aff.SetPreemptive(key, false);
+            EmitSlot($"[KV-UNLOCK] Tool 链结束，解除锁定：{key}");
+        }
+    }
+
+    /// <summary>KV Cache 生命周期（ApplySlotAffinityAsync 子段②）：驱逐前 save（仅被驱逐者 KvCache=true；
+    /// evicted != null 已蕴含 evictedSlot 有效，SlotAffinity 仅驱逐时置位）→ restore 自愈
+    /// （① isNew 重绑定；② 进程重启后该 key 首次使用——休眠唤醒 KV 自愈）。
+    /// 无论是否命中 restore，都把 key 记入 _servedKeysThisRun：本进程服务过即不再 restore，防误用磁盘旧快照回退内存新状态。
+    /// 返回是否执行了 KV restore（restore 后需重跑 TokenGuard 校验）。</summary>
+    private async Task<bool> HandleEvictAndRestoreAsync(KvCacheManager? kv, string? evicted, int evictedSlot, bool evictedKvCache, string? key, int slot, bool isNew)
+    {
+        // 驱逐前 save（仅当被驱逐者的 KvCache=true）
         if (evicted != null && kv != null && evictedKvCache)
         {
             try
@@ -215,8 +242,7 @@ public partial class SmartScheduler
             EmitSlot($"驱逐 {evicted}（KV Cache 已关闭，不保存）");
         }
 
-        // KV Cache：restore（两种触发：① isNew 重绑定；② 进程重启后该 key 首次使用——休眠唤醒 KV 自愈。
-        // 无论是否命中 restore，都把 key 记入 _servedKeysThisRun：本进程服务过即不再 restore，防误用磁盘旧快照回退内存新状态）
+        // restore
         bool didRestore = false;
         if (key != null)
         {
@@ -246,17 +272,7 @@ public partial class SmartScheduler
                 }
             }
         }
-
-        if (isNew)
-        {
-            var evt = $"槽位绑定：{key} → slot{slot}{(evicted != null ? $"（驱逐 {evicted}）" : "")}";
-            EmitSlot(evt);
-            SlotBindingChanged?.Invoke();
-        }
-        // E-1：n_slots 注入直接改树（已有 n_slots 时不覆盖，尊重客户端显式指定）
-        if (root != null)
-            ThinkingModeHelper.InjectNSlots(root, slot);
-        return (routedSlot, routedKey, didRestore);
+        return didRestore;
     }
 
     /// <summary>解析 AutoPreemptiveApps 配置为前缀集合（§4.2 自动冻结）。</summary>
