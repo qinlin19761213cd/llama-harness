@@ -37,6 +37,8 @@ public partial class MainForm : Form
         _slot = new SlotPanelView(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
         _monitor = new MonitorPanelView(_config, _status, () => _scheduler.BackendPort, () => IsDisposed, AppendLog); // AH-1：监控采集用运行时后端端口
         _perfSampler = new PerfSampler(() => _scheduler.BackendPort, () => _scheduler.InflightCount); // v2.21 性能采样（双节奏 1s/5s，端口门控 cpp）
+        _perfSampler.Sampled += OnPerfSampled; // 采样点 → perf.log（system 1s + cpp 5s）
+        _scheduler.Timing.Completed += OnPerfTiming; // 请求时延 → perf.log（timing 事件）
         _presenter = new MainFormPresenter(this, _config, _scheduler, _status, _stats, _slot, _monitor);
 
         BuildUi();
@@ -64,6 +66,8 @@ public partial class MainForm : Form
         _scheduler.Initialize();
 
         // 系统资源改为手动触发（无轮询）：点击「手动刷新」按钮才采集一次
+
+        PerfLog.Start(); // 性能日志写入器（独立直写 perf.log，5MB×3 轮切）
 
         // 性能采样器：常驻后台（1s 轻量 + 5s 慢指标），随应用生命周期启停（v2.21）
         _perfSampler.Start();
@@ -169,6 +173,7 @@ public partial class MainForm : Form
         if (!_config.Save(out string? err))
             AppendLog($"警告：配置保存失败：{err}");
         _perfSampler.Dispose(); // 停止后台采样（Step2 接线）
+        PerfLog.Stop(); // 关闭性能日志写入器（Flush 后释放文件）
         _scheduler.Dispose();
         LogFile.Shutdown(); // E-6：Flush + 关闭常驻日志写入器（防缓冲丢失）
     }
@@ -176,6 +181,15 @@ public partial class MainForm : Form
     // ==================== 日志 / 跨线程 / 命令（供 Presenter 与区域 Controller 调用） ====================
 
     /// <summary>追加一行日志（文件持久化 + UI 队列渲染由 LogView 承接）。可来自任意线程。</summary>
+    // —— 性能日志回调（v2.21）：后台线程触发，PerfLog 自身线程安全 ——
+    private void OnPerfSampled(PerfPoint p)
+    {
+        PerfLog.LogSystem(p);
+        if (p.HasCpp) PerfLog.LogCpp(p); // cpp 字段非空才写（5s 节奏）
+    }
+
+    private void OnPerfTiming(RequestTiming t) => PerfLog.LogTiming(t);
+
     internal void AppendLog(string line) => _logView.Append(line);
 
     /// <summary>跨线程切回 UI 线程执行（句柄未创建时静默丢弃，同原 BeginInvoke 语义）。</summary>

@@ -27,6 +27,7 @@ public static class AppPaths
     public static string SlotLog => Path.Combine(LogDir, "slot.log");
     public static string RequestDumpLog => Path.Combine(LogDir, "request_dump.log");
     public static string UnhandledLog => Path.Combine(LogDir, "unhandled.log");
+    public static string PerfLog => Path.Combine(LogDir, "perf.log"); // 性能日志（v2.21，独立直写 5MB 轮切）
 
     // —— static/ ——
     /// <summary>static/icon/{fileName} 图标路径。</summary>
