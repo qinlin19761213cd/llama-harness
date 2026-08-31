@@ -442,23 +442,49 @@ public partial class MainForm : Form
         foreach (var c in _autoPreChecks) UiTheme.ApplyBlackCheck(c);
         foreach (var c in _snapChecks) UiTheme.ApplyBlackCheck(c);
 
-        var panel = new TableLayoutPanel
+        var root = new Panel
         {
             Dock = DockStyle.Top,
-            ColumnCount = 3,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = Color.Transparent,
-            Margin = new Padding(0, 0, 0, 6),
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        void AddRow(string label, Control value, Control? extra)
+        // 分组框 + 3 列参数网格（v2.17：按 基础/资源/高级 三组建立视觉层次）
+        TableLayoutPanel NewGroup(string title)
         {
-            int row = panel.RowStyles.Count;
-            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var g = new GroupBox
+            {
+                Text = title,
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.Transparent,
+                ForeColor = Color.FromArgb(210, 210, 210),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+                Margin = new Padding(0, 0, 0, 10),
+            };
+            var grid = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                ColumnCount = 3,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.Transparent,
+                Margin = new Padding(10, 6, 10, 10),
+            };
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            g.Controls.Add(grid);
+            root.Controls.Add(g);
+            return grid;
+        }
+
+        void AddRow(TableLayoutPanel grid, string label, Control value, Control? extra)
+        {
+            int row = grid.RowStyles.Count;
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             var lbl = new Label
             {
                 Text = label,
@@ -468,62 +494,71 @@ public partial class MainForm : Form
                 TextAlign = ContentAlignment.MiddleLeft,
                 Margin = new Padding(0, 4, 6, 4),
             };
-            panel.Controls.Add(lbl, 0, row);
+            grid.Controls.Add(lbl, 0, row);
             value.Margin = new Padding(0, 2, 0, 2);
-            panel.Controls.Add(value, 1, row);
+            grid.Controls.Add(value, 1, row);
             if (extra != null)
             {
                 extra.Margin = new Padding(2, 0, 0, 0);
-                panel.Controls.Add(extra, 2, row);
+                grid.Controls.Add(extra, 2, row);
             }
         }
 
-        AddRow("exe:", _txtExe, _btnBrowseExe);
-        AddRow("模型:", _txtModel, _btnBrowseModel);
-        AddRow("端口:", _numPort, null);
-        AddRow("ctx:", _numCtx, null);
-        AddRow("ngl:", _numNgl, null);
-        AddRow("parallel:", _numParallel, null);
-        AddRow("kv:", _chkNoKv, null);
-        AddRow("线程:", _numThreads, null);
-        AddRow("load-mode:", _txtLoadMode, null);
-        AddRow("ubatch:", _numUbatch, null);
-        AddRow("batch:", _numBatch, null);
-        AddRow("cache-type-k/v:", _txtCacheTypeKv, null);
-        AddRow("flash-attn:", _chkFlashAttn, null);
-        AddRow("spec-type:", _txtSpecType, null);
-        AddRow("spec-draft-n-max:", _numSpecDraftNMax, null);
-        AddRow("request-dump:", _chkRequestDump, null);
-        _cmbLogQueuePolicy.Items.Add("drop-newest（保留历史，丢新入队）");
-        _cmbLogQueuePolicy.Items.Add("drop-oldest（丢最旧，保留新消息）");
-        AddRow("log-queue-full:", _cmbLogQueuePolicy, null);
-        AddRow("tb(batch线程):", _numBatchThreads, null);
-        AddRow("附加:", _txtExtra, null);
-        AddRow("休眠(min):", _numIdleMin, null);
-        AddRow("P核掩码:", _txtPcoreMask, null);
-        AddRow("流式:", _chkForceStream, null);
-        AddRow("缓存路径:", _txtKvCachePath, null);
-        AddRow("Token Guard:", _chkTokenGuard, null);
-        AddRow("输出预留:", _numReservedTokens, null);
-        AddRow("Prompt头部开销:", _numPromptOverhead, null);
-        AddRow("Cache-RAM(MiB):", _numCacheRam, null);
-        AddRow("空闲slot缓存:", _chkNoCacheIdleSlots, null);
-        AddRow("输出续接:", _chkContinuation, null);
-        AddRow("最大续接:", _numMaxContinuations, null);
-        AddRow("续接超时:", _numContTimeout, null);
-        AddRow("崩溃恢复:", _chkCrashRecover, null);
-        AddRow("最大重启:", _numMaxRestarts, null);
+        // ▍基础参数 · 模型加载与推理
+        var gBasic = NewGroup("▍基础参数 · 模型加载与推理");
+        AddRow(gBasic, "exe:", _txtExe, _btnBrowseExe);
+        AddRow(gBasic, "模型:", _txtModel, _btnBrowseModel);
+        AddRow(gBasic, "端口:", _numPort, null);
+        AddRow(gBasic, "ctx:", _numCtx, null);
+        AddRow(gBasic, "ngl:", _numNgl, null);
+        AddRow(gBasic, "parallel:", _numParallel, null);
+        AddRow(gBasic, "kv:", _chkNoKv, null);
+        AddRow(gBasic, "线程:", _numThreads, null);
+        AddRow(gBasic, "load-mode:", _txtLoadMode, null);
+        AddRow(gBasic, "ubatch:", _numUbatch, null);
+        AddRow(gBasic, "batch:", _numBatch, null);
+        AddRow(gBasic, "cache-type-k/v:", _txtCacheTypeKv, null);
+        AddRow(gBasic, "flash-attn:", _chkFlashAttn, null);
+        AddRow(gBasic, "spec-type:", _txtSpecType, null);
+        AddRow(gBasic, "spec-draft-n-max:", _numSpecDraftNMax, null);
+
+        // ▍资源管理 · 缓存/快照/显存
+        var gRes = NewGroup("▍资源管理 · 缓存/快照/显存");
+        AddRow(gRes, "缓存路径:", _txtKvCachePath, null);
+        AddRow(gRes, "Cache-RAM(MiB):", _numCacheRam, null);
+        AddRow(gRes, "空闲slot缓存:", _chkNoCacheIdleSlots, null);
+        AddRow(gRes, "Token Guard:", _chkTokenGuard, null);
+        AddRow(gRes, "输出预留:", _numReservedTokens, null);
+        AddRow(gRes, "Prompt头部开销:", _numPromptOverhead, null);
+        AddRow(gRes, "request-dump:", _chkRequestDump, null);
         var autoPreFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         foreach (var c in _autoPreChecks) autoPreFlow.Controls.Add(c);
-        AddRow("自动强占:", autoPreFlow, null);
+        AddRow(gRes, "自动强占:", autoPreFlow, null);
         var snapFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         foreach (var c in _snapChecks) snapFlow.Controls.Add(c);
-        AddRow("自动快照:", snapFlow, null);
+        AddRow(gRes, "自动快照:", snapFlow, null);
+        AddRow(gRes, "休眠(min):", _numIdleMin, null);
+
+        // ▍高级选项 · 流式/续接/恢复
+        var gAdv = NewGroup("▍高级选项 · 流式/续接/恢复");
+        _cmbLogQueuePolicy.Items.Add("drop-newest（保留历史，丢新入队）");
+        _cmbLogQueuePolicy.Items.Add("drop-oldest（丢最旧，保留新消息）");
+        AddRow(gAdv, "log-queue-full:", _cmbLogQueuePolicy, null);
+        AddRow(gAdv, "tb(batch线程):", _numBatchThreads, null);
+        AddRow(gAdv, "附加:", _txtExtra, null);
+        AddRow(gAdv, "P核掩码:", _txtPcoreMask, null);
+        AddRow(gAdv, "流式:", _chkForceStream, null);
+        AddRow(gAdv, "输出续接:", _chkContinuation, null);
+        AddRow(gAdv, "最大续接:", _numMaxContinuations, null);
+        AddRow(gAdv, "续接超时:", _numContTimeout, null);
+        AddRow(gAdv, "崩溃恢复:", _chkCrashRecover, null);
+        AddRow(gAdv, "最大重启:", _numMaxRestarts, null);
         // 模式行：标签 + CheckBox 同行（AutoSize 让 CheckBox 紧跟标签，不再撑满整行）
         var chkAutoRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         chkAutoRow.Controls.Add(_chkAuto);
-        AddRow("模式:", chkAutoRow, null);
+        AddRow(gAdv, "模式:", chkAutoRow, null);
 
+        // 中文注释：已有 23 条逐字保留 + 补 11 条核心参数（v2.17）
         _tooltip.SetToolTip(_txtExtra, "原样拼入命令行；含空格的路径需加引号");
         _tooltip.SetToolTip(_chkForceStream, "把非流式请求改写为 stream=true。仅适用于能解析 SSE 的客户端。");
         _tooltip.SetToolTip(_txtKvCachePath, "KV Cache 保存目录（--slot-save-path）；多槽时驱逐自动 save，重绑定自动 restore。留空 = 禁用。");
@@ -547,8 +582,20 @@ public partial class MainForm : Form
         _tooltip.SetToolTip(_chkRequestDump, "勾选后 dump 所有请求体 + headers 到 logs/request_dump.log（应用识别分析用）；不勾选 = 关闭。");
         _tooltip.SetToolTip(_cmbLogQueuePolicy, "日志管道队列满（50k 行）时的丢弃策略：drop-newest = 保留历史日志、丢新入队（默认，排查更看重最早异常源头）；drop-oldest = 丢最旧、保留新消息。");
         _tooltip.SetToolTip(_numBatchThreads, "batch 阶段 CPU 线程数（--tb）：prefill 分词/调度辅助加速；0 = 不拼接。");
+        // —— 新增 11 条（v2.17）——
+        _tooltip.SetToolTip(_txtExe, "llama-server 可执行文件路径（含 llama-server.exe）；无效时自动查找或手动浏览。");
+        _tooltip.SetToolTip(_txtModel, "GGUF 模型文件路径（.gguf），留空启动前 AutoFindExe 会提示。");
+        _tooltip.SetToolTip(_numPort, "前端 HTTP 监听端口；智能模式后端占用 Port+1，监听中禁改。");
+        _tooltip.SetToolTip(_numCtx, "上下文长度（--ctx-size）；KV 总量 = ctx × parallel，显存紧张时优先降。");
+        _tooltip.SetToolTip(_numNgl, "GPU 层数（--n-gpu-layers）；999 = 全量 offload 显存，0 = 纯 CPU。");
+        _tooltip.SetToolTip(_numParallel, "并行槽位数（--parallel）；每槽独立上下文，多 agent 并发按此路由。");
+        _tooltip.SetToolTip(_chkNoKv, "--no-kv-unified：不启用统一 KV 缓存（unified KV 与分离 KV 场景）。");
+        _tooltip.SetToolTip(_numThreads, "CPU 线程数（--threads）；默认 = 逻辑核心数。");
+        _tooltip.SetToolTip(_numIdleMin, "智能模式：空闲 N 分钟后自动休眠释放显存，请求自动唤醒。");
+        _tooltip.SetToolTip(_txtPcoreMask, "P 核 CPU 亲和掩码（--p-core-mask，十六进制）；留空 = 不限制。");
+        _tooltip.SetToolTip(_chkAuto, "智能按需模式：空闲休眠 + 请求唤醒 + 端口复用，推荐开启。");
 
-        return panel;
+        return root;
     }
 
 }
