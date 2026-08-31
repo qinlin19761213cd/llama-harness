@@ -59,13 +59,11 @@ public sealed class StatusPanelView : UserControl
     /// <summary>构建右侧状态面板（30% 列）：八卡片纵向等高堆叠（原底部 SideStatsPanel 移入）。</summary>
     public Control BuildPage()
     {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = UiTheme.C_Frame,
-            Padding = new Padding(12),
-            AutoScroll = true,
-        };
+        // 容器自身填满 Panel2（30% 列）：缺失此设置 UserControl 以默认 150x150 挂在左上角，8 卡片被压扁不可见
+        Dock = DockStyle.Fill;
+        BackColor = UiTheme.C_Frame;
+        Padding = new Padding(12);
+        AutoScroll = true;
         var grid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
