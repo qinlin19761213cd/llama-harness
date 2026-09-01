@@ -31,7 +31,7 @@ public sealed class PerfMonitorView : UserControl
     private Label _lblLogSummary = null!;
     private Label _lblKvHit = null!, _lblKvFalse = null!, _lblEvict = null!, _lblPreempt = null!, _lblLogDrop = null!, _lblLogFlush = null!;
     private Label _lblPerfTimestamp = null!;
-    private readonly Button[] _metricBtns = new Button[4];
+    private readonly Button[] _metricBtns = new Button[5];
 
     public PerfMonitorView(PerfSampler sampler, RequestTimingTracker timing,
         IReadOnlyList<PerfThresholdRule> rules, Action<string>? appendLog = null)
@@ -83,8 +83,8 @@ public sealed class PerfMonitorView : UserControl
             Font = new Font("Microsoft YaHei UI", 8F),
             Padding = new Padding(0, 10, 4, 0),
         };
-        string[] metrics = { "显存", "CPU", "吞吐", "KV占用" };
-        string[] keys = { "vram_mb", "cpu", "tg_tps", "ctx" };
+        string[] metrics = { "显存", "CPU", "吞吐", "KV占用", "内存" };
+        string[] keys = { "vram_mb", "cpu", "tg_tps", "ctx", "mem_gb" };
         var flow = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -434,7 +434,7 @@ public sealed class PerfMonitorView : UserControl
     {
         for (int i = 0; i < _metricBtns.Length; i++)
         {
-            string[] keys = { "vram_mb", "cpu", "tg_tps", "ctx" };
+            string[] keys = { "vram_mb", "cpu", "tg_tps", "ctx", "mem_gb" };
             bool sel = keys[i] == _currentMetric;
             _metricBtns[i].BackColor = sel ? UiTheme.C_Primary : UiTheme.C_Btn;
             _metricBtns[i].ForeColor = sel ? Color.Black : Color.White;

@@ -39,6 +39,7 @@ public sealed class PerfTrendChart : Control
             case "cpu": _title = "CPU 占用 (%)"; _lineColor = UiTheme.C_Green; break;
             case "tg_tps": _title = "生成吞吐 (token/s)"; _lineColor = Color.FromArgb(0x4F, 0xA3, 0xFF); break;
             case "ctx": _title = "KV 上下文占用"; _lineColor = Color.FromArgb(0xFF, 0xCC, 0x4D); break;
+        case "mem_gb": _title = "内存占用 (GB)"; _lineColor = Color.FromArgb(0x7B, 0xC9, 0xA6); break;
             default: _title = metric; _lineColor = UiTheme.C_Primary; break;
         }
         Invalidate();
@@ -147,6 +148,7 @@ public sealed class PerfTrendChart : Control
         if (metric == "ctx") return $"{v * 100:F0}%";
         if (metric == "tg_tps" || metric == "pp_tps") return $"{v:F0}";
         if (metric == "cpu") return $"{v:F0}%";
+    if (metric == "mem_gb") return $"{v:F1}G";
         return $"{v:F1}";
     }
 }
