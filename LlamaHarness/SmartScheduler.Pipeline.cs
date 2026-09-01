@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -284,6 +284,10 @@ public partial class SmartScheduler
                         }
                     });
                 }
+                // 本轮请求已完成并产生新的 KV（prompt 增量 + 生成输出），磁盘快照已滞后于 RAM。
+                // 清除 fresh 使下一轮条件式 save 重新触发，保证磁盘快照持续覆盖最新 KV
+                // （c93e0e0 缺陷补齐：原 fresh 只增不减，首存档后每轮后台 save 永不触发）。
+                lock (_kvStateGate) _freshSnapshotKeys.Remove(routedKey);
             }
         }
         catch (IOException ex)
