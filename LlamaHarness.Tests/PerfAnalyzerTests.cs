@@ -19,6 +19,10 @@ public class PerfAnalyzerTests
             Inflight = inflight,
         };
 
+    private static List<PerfThresholdRule> TgRule(int dur = 30) => new()
+    {
+        new PerfThresholdRule { Metric = "tg_tps", Direction = PerfThresholdDirection.Below, WarnValue = 10, CritValue = 3, MinDurationSeconds = dur },
+    };
     private static List<PerfThresholdRule> CpuRule(int dur = 30) => new()
     {
         new PerfThresholdRule { Metric = "cpu", Direction = PerfThresholdDirection.Above, WarnValue = 90, CritValue = 97, MinDurationSeconds = dur },
@@ -70,7 +74,7 @@ public class PerfAnalyzerTests
         {
             new() { Metric = "tg_tps", Direction = PerfThresholdDirection.Below, WarnValue = 10, CritValue = 3, MinDurationSeconds = 5 },
         };
-        var pts = Enumerable.Range(0, 8).Select(i => Pt(tg: 5, seq: i)).ToList(); // 持续 8s < 10
+        var pts = Enumerable.Range(0, 8).Select(i => Pt(tg: 5, inflight: 1, seq: i)).ToList(); // 负载下持续 8s < 10（负载门控：空闲点不评估吞吐）
         var alarms = PerfAnalyzer.EvaluatePoints(pts, rules);
         var a = Assert.Single(alarms);
         Assert.Equal(PerfAlarmLevel.Warn, a.Level);
@@ -195,5 +199,29 @@ public class PerfAnalyzerTests
         {
             try { File.Delete(path); } catch { }
         }
+    }
+    [Fact]
+    public void EvaluatePoints_IdleSkipsThroughputRule()
+    {
+        // 空闲（inflight=0，无处理槽）时 tg_tps=0 持续 32s：负载门控跳过 → 不误报
+        var idle = Enumerable.Range(0, 32).Select(i => Pt(tg: 0, inflight: 0, seq: i)).ToList();
+        Assert.Empty(PerfAnalyzer.EvaluatePoints(idle, TgRule()));
+
+        // 有负载（inflight=1）时 tg_tps=0 持续 32s：仍触发 Crit（真异常不被吞）
+        var busy = Enumerable.Range(0, 32).Select(i => Pt(tg: 0, inflight: 1, seq: i)).ToList();
+        var alarms = PerfAnalyzer.EvaluatePoints(busy, TgRule());
+        Assert.NotEmpty(alarms);
+        Assert.All(alarms, a => Assert.Equal("tg_tps", a.Metric));
+    }
+
+    [Fact]
+    public void EvaluatePoints_IdleDoesNotBreakBusyRun()
+    {
+        // 空闲点跳过（不重置）：16s 负载 + 16s 空闲 + 16s 负载 → 负载累计 32s 仍触发
+        var pts = Enumerable.Range(0, 16).Select(i => Pt(tg: 0, inflight: 1, seq: i))
+            .Concat(Enumerable.Range(16, 16).Select(i => Pt(tg: 0, inflight: 0, seq: i)))
+            .Concat(Enumerable.Range(32, 16).Select(i => Pt(tg: 0, inflight: 1, seq: i)))
+            .ToList();
+        Assert.NotEmpty(PerfAnalyzer.EvaluatePoints(pts, TgRule()));
     }
 }

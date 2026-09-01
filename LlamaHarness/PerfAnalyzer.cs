@@ -123,6 +123,9 @@ public static class PerfAnalyzer
             int runWarn = 0, runCrit = 0;
             foreach (var pt in points)
             {
+                // 吞吐类规则负载门控：无在途请求且无处理槽的空闲点跳过（不累加不重置）——
+                // 空闲 0 吞吐非异常，避免每 5 分钟误报；负载期连续低吞吐仍触发
+                if ((rule.Metric == "tg_tps" || rule.Metric == "pp_tps") && IsIdlePoint(pt)) continue;
                 var v = ValueOf(pt, rule.Metric);
                 if (v == null) { runWarn = 0; runCrit = 0; continue; }
                 bool overCrit = IsOver(v.Value, rule);
@@ -156,6 +159,9 @@ public static class PerfAnalyzer
         return alarms;
     }
 
+    /// <summary>采样点是否空闲（无在途请求且无处理中槽位）——吞吐类告警（tg_tps/pp_tps）的负载门控。</summary>
+    private static bool IsIdlePoint(PerfPoint pt) =>
+        (pt.Inflight == null || pt.Inflight == 0) && (pt.SlotsProcessing == null || pt.SlotsProcessing == 0);
     /// <summary>单请求时延阈值检测（total_ms 等请求级指标；规则 MinDurationSeconds 语义 = 单次即触发）。</summary>
     public static List<PerfAlarm> EvaluateTiming(RequestTiming t, IReadOnlyList<PerfThresholdRule> rules)
     {
