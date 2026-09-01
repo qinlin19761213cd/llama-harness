@@ -82,8 +82,9 @@ public partial class SmartScheduler
             if (didKvRestore)
             {
                 Log?.Invoke("[TOKEN-GUARD] KV restore 后重跑校验通过（saved_n 残留 + 新 prompt 未超预算）");
-                // restore 命中 = 快照已加载到槽位：标记新鲜，避免本轮完成后立即冗余重存
-                if (routedKey != null) lock (_kvStateGate) _freshSnapshotKeys.Add(routedKey);
+                // v2.23.11（fix）：不再在 restore 命中时标记"新鲜"——restore 时磁盘快照本就滞后于 RAM（restore 的是旧版本），
+                // 标记新鲜会导致条件式后台 save 永不触发，长全量 prefill 后快照不落盘（实测 saved_n 卡在首存档值）。
+                // 本轮完成后由条件式 save 落盘最新 KV（后台异步不阻塞，_inflightSaves 按 key 去重）。
             }
         }
 
