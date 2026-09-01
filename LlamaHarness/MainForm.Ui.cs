@@ -237,9 +237,9 @@ public partial class MainForm : Form
         var btnHelp = UiTheme.MakeBtn("使用说明", "使用说明.png", h: 30);
         var btnFaq = UiTheme.MakeBtn("常见问题", "常见问题.png", h: 30);
         var btnChangelog = UiTheme.MakeBtn("更新内容", "更新内容.png", h: 30);
-        btnHelp.Click += (_, _) => { SelectTab(6); ShowDocInPanel(_docPanel, "使用说明", "static/doc/readme.md"); };
-        btnFaq.Click += (_, _) => { SelectTab(6); ShowDocInPanel(_docPanel, "常见问题", "static/doc/FAQs.md"); };
-        btnChangelog.Click += (_, _) => { SelectTab(6); ShowDocInPanel(_docPanel, "更新内容", "static/doc/update.md"); };
+        btnHelp.Click += (_, _) => { SelectTab(7); ShowDocInPanel(_docPanel, "使用说明", "static/doc/readme.md"); }; // 信息展示页（v2.23.2 性能监控插入后索引 6→7）
+        btnFaq.Click += (_, _) => { SelectTab(7); ShowDocInPanel(_docPanel, "常见问题", "static/doc/FAQs.md"); };
+        btnChangelog.Click += (_, _) => { SelectTab(7); ShowDocInPanel(_docPanel, "更新内容", "static/doc/update.md"); };
 
         // ── 布局网格：[12.5% | 75% | 12.5%] 三列——所有按键/容器放中列，
         // 等宽（含应用名）+ 居中 + 左右间隔等宽；Percent 列保证侧边栏放大时边距等比缩放 ──
