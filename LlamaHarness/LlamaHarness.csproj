@@ -15,4 +15,9 @@
     <Content Include="static/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+
+  <!-- 测试程序集可见 internal（PerfSampler 解析工具方法回归测试） -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="LlamaHarness.Tests" />
+  </ItemGroup>
 </Project>

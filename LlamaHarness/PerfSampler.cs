@@ -178,6 +178,10 @@ public sealed class PerfSampler : IDisposable
             {
                 var snap = await mon.CaptureSnapshotAsync();
                 var slots = snap.Slots;
+                // —— b10676 兼容：新版 /slots 精简（仅 id/n_ctx/speculative/is_processing，无 tg_tps/pp_tps/tokens_cached），
+                //    吞吐改从 /metrics（Prometheus）的 predicted_tokens_seconds / prompt_tokens_seconds 兜底 ——
+                double? mTg = null, mPp = null;
+                try { (mTg, mPp) = ParseMetricsPrometheus(snap.RawMetricsText); } catch { }
                 if (slots.Count > 0)
                 {
                     double ppSum = 0, tgSum = 0;
@@ -195,8 +199,9 @@ public sealed class PerfSampler : IDisposable
                     double ctxPct = ctx > 0 ? (double)tokSum / ctx : 0;
                     lock (_gate)
                     {
-                        _ppTps = ppSum / n;
-                        _tgTps = tgSum / n;
+                        // 吞吐优先 /metrics（新版字段所在，含 0）；/slots 均值仅作旧版兜底
+                        _ppTps = mPp ?? (n > 0 ? ppSum / n : 0);
+                        _tgTps = mTg ?? (n > 0 ? tgSum / n : 0);
                         _tokensCached = tokSum;
                         _ctxUsedPct = ctxPct;
                         _slotsProcessing = proc;
@@ -214,14 +219,45 @@ public sealed class PerfSampler : IDisposable
         }
     }
 
-    /// <summary>解析 nvidia-smi 文本 "used/total MB" → (已用MB, 总量MB)；格式不符返回 (null, null)。</summary>
-    private static (double? used, double? total) ParseVramText(string text)
+    /// <summary>解析 llama.cpp /metrics（Prometheus 文本）平均吞吐：predicted_tokens_seconds → 生成 t/s、
+    /// prompt_tokens_seconds → prompt t/s；b10676 版 /slots 精简（无 tg_tps/pp_tps）时的兜底来源。
+    /// 缺失字段/空文本返回 (null, null)；解析异常不抛出。</summary>
+    internal static (double? TgTps, double? PpTps) ParseMetricsPrometheus(string text)
     {
-        var parts = text.Split(',', 2);
-        if (parts.Length < 2) return (null, null);
-        if (!double.TryParse(parts[0].Trim(), out double used)) return (null, null);
-        var second = parts[1].Trim().Split(' ', 2); // "8192 MB" → "8192"
-        double? total = double.TryParse(second[0].Trim(), out double t) ? t : null;
+        if (string.IsNullOrWhiteSpace(text)) return (null, null);
+        double? tg = null, pp = null;
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] == '#') continue;
+            int sp = line.IndexOf(' ');
+            if (sp <= 0) continue;
+            var name = line.Substring(0, sp);
+            var val = line.Substring(sp + 1).Trim();
+            if (name == "llamacpp:predicted_tokens_seconds" &&
+                double.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var t))
+                tg = t;
+            else if (name == "llamacpp:prompt_tokens_seconds" &&
+                double.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var p))
+                pp = p;
+        }
+        return (tg, pp);
+    }
+
+    /// <summary>解析显存文本 → (已用MB, 总量MB)。兼容 nvidia-smi 逗号格式（"16546, 20480"）
+    /// 与 GetVramTextAsync 斜杠格式（"16546/20480 MB"）；格式不符返回 (null, null)。</summary>
+    internal static (double? used, double? total) ParseVramText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return (null, null);
+        string first, second;
+        int comma = text.IndexOf(',');
+        int slash = text.IndexOf('/');
+        if (comma > 0) { first = text.Substring(0, comma); second = text.Substring(comma + 1); }
+        else if (slash > 0) { first = text.Substring(0, slash); second = text.Substring(slash + 1); }
+        else return (null, null);
+        if (!double.TryParse(first.Trim(), out double used)) return (null, null);
+        var secondPart = second.Trim().Split(' ', 2)[0].Trim(); // "20480 MB" / "20480" → "20480"
+        double? total = double.TryParse(secondPart, out double t) ? t : null;
         return (used, total);
     }
 
