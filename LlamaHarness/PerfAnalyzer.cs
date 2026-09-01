@@ -224,7 +224,7 @@ public static class PerfAnalyzer
         DateTime? first = null, last = null;
         try
         {
-            foreach (var line in File.ReadLines(path))
+            foreach (var line in ReadLinesShared(path))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 total++;
@@ -291,7 +291,7 @@ public static class PerfAnalyzer
         if (!File.Exists(path)) return sessions;
         try
         {
-            foreach (var line in File.ReadLines(path))
+            foreach (var line in ReadLinesShared(path))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split(',');
@@ -355,6 +355,20 @@ public static class PerfAnalyzer
     }
 
     // —— 内部辅助 ——
+
+    /// <summary>以 FileShare.ReadWrite 逐行读取（兼容运行中 PerfLog 写线程的独占写句柄）。
+    /// 故障实证（v2.23.1）：File.ReadLines 默认 FileShare.Read，与持有 FileAccess.Write 的 perf.log 写句柄
+    /// 冲突抛 IOException → 被调用方 catch 吞掉 → TotalLines=0 → 误报"perf.log 为空或不存在"（文件实际存在且非空）。</summary>
+    private static IEnumerable<string> ReadLinesShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var sr = new StreamReader(fs);
+        while (!sr.EndOfStream)
+        {
+            var line = sr.ReadLine();
+            if (line != null) yield return line;
+        }
+    }
 
     /// <summary>会话内聚合构建器（ParseSessions 内部状态）。</summary>
     private sealed class SessionBuilder

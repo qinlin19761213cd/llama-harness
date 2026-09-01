@@ -155,4 +155,45 @@ public class PerfAnalyzerTests
         Assert.True(s.IsEmpty);
         Assert.Equal(0, s.TotalLines);
     }
+
+    [Fact]
+    public void ParsePerfLog_WhenFileLockedByWriter_StillReads()
+    {
+        // v2.23.1 故障回归：perf.log 存在且非空，但运行中 PerfLog 写线程持有 FileAccess.Write 句柄时，
+        // File.ReadLines（FileShare.Read）与写句柄共享冲突抛 IOException → 被吞 → TotalLines=0 → 误报"为空或不存在"。
+        // 修复：ReadLinesShared 用 FileShare.ReadWrite，锁写共存下仍可读取。
+        string path = Path.Combine(Path.GetTempPath(), $"perf_{Guid.NewGuid():N}.log");
+        try
+        {
+            File.WriteAllLines(path, new[]
+            {
+                "system,2026-09-01 10:00:00.100,cpu=12.0,mem=28.5,total=64.0,vram=1234,vram_total=8192,inflight=1",
+                "cpp,2026-09-01 10:00:05.100,pp_tps=0.0,tg_tps=65.2,tok=12345,ctx=0.180,slots=1",
+                "timing,2026-09-01 10:00:07.200,app=trae_global,path=/v1/chat/completions,success=1,wake=0.5,gateway=8.2,backend=3200.1,total=3208.8",
+            });
+            // 模拟运行中 PerfLog 写线程：持有 FileAccess.Write 句柄（FileShare.Read 只允许他人读）
+            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+            using (var sw = new StreamWriter(fs) { AutoFlush = true })
+            {
+                sw.WriteLine("session,2026-09-01 10:00:08.000,type=start,sid=abc123,ver=v2.22");
+                sw.WriteLine("system,2026-09-01 10:00:09.000,cpu=13.0,mem=28.5,total=64.0,vram=2048,vram_total=8192,inflight=1");
+
+                // 修复前：File.ReadLines(FileShare.Read) 与写句柄冲突 → IOException → TotalLines=0 → IsEmpty
+                var s = PerfAnalyzer.ParsePerfLog(path);
+                Assert.False(s.IsEmpty);
+                Assert.True(s.TotalLines >= 4);
+                Assert.Equal(2, s.SystemCount);
+                Assert.Equal(2048, s.MaxVramMb);
+
+                // ParseSessions 同样应能读取（写句柄共存）
+                var sessions = PerfAnalyzer.ParseSessions(path);
+                Assert.Single(sessions);
+                Assert.Equal("abc123", sessions[0].Sid);
+            }
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
 }
