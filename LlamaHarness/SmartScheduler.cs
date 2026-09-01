@@ -127,6 +127,7 @@ public sealed partial class SmartScheduler : IDisposable
     private readonly HashSet<string> _toolLockedKeys = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>前缀哈希表（§8 可观测）：key → SHA256(最新一轮之前的全部 messages JSON)。比对判定原生 KV 前缀复用 HIT/MISS。</summary>
     private readonly Dictionary<string, string> _prefixHashes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _lastDriftDiff = new(StringComparer.OrdinalIgnoreCase); // v2.23.11 P1-4：最近一次前缀漂移差异定位（供 [KV-DRIFT] 告警补充）
     /// <summary>本进程运行以来已服务过的亲和 key（唤醒时清空）：「进程重启后该 key 首次使用 → restore KV 自愈」判定依据，
     /// 防止进程存活期间误用磁盘旧快照回退内存中更新的槽位状态。</summary>
     private readonly HashSet<string> _servedKeysThisRun = new(StringComparer.OrdinalIgnoreCase);
@@ -225,6 +226,11 @@ public sealed partial class SmartScheduler : IDisposable
                     var driftMsg = $"[KV-DRIFT] 前缀漂移告警：{r.Key} 连续 {RestoreStats.DriftChainThreshold} 次存在快照仍全量 prefill（saved_n={r.SavedN}），KV 增量复用失效——检查系统提示词/tools 组装稳定性或 TokenGuard 裁剪是否导致前缀漂移";
                     Log?.Invoke("警告：" + driftMsg);
                     EmitSlot(driftMsg);
+                    // v2.23.11（P1-4）漂移精确定位：从指纹差异缓存定位哪一段变了（system/tools/messages）
+                    string? diff = null;
+                    lock (_kvStateGate) { if (_lastDriftDiff.TryGetValue(r.Key, out diff)) _lastDriftDiff.Remove(r.Key); }
+                    if (!string.IsNullOrEmpty(diff))
+                        Log?.Invoke($"[KV-DRIFT-LOCATE] {r.Key} 漂移定位：{diff}");
                 }
                 if (r.Alert != RestoreStats.AlertLevel.None)
                 {

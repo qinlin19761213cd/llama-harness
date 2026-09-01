@@ -105,6 +105,72 @@ public static class RequestProcessor
             return c.ToJsonString().Length; // 数组型 content：序列化长度作口径
         }
     }
+    /// <summary>分段前缀指纹（v2.23.11，P1-4 漂移定位）：组合串 "S:{systemLen}|T:{toolsCount}:{toolsLen}|M:{msgCount}:{msgFp}"。
+    /// system 段 = 首条 role=system 消息 content 长度；tools 段 = 工具定义条数+序列化长度；messages 段 = 条数+原轻量指纹。
+    /// 与 PrefixHash 同属 E-4 轻量指纹（零全量消息序列化，仅 tools 定义小体积序列化），供 [KV-MISS] 精确定位哪一段漂移。</summary>
+    public static string? SegmentPrefixHash(JsonObject obj)
+    {
+        try
+        {
+            var msgs = obj["messages"] as System.Text.Json.Nodes.JsonArray;
+            if (msgs == null || msgs.Count < 2) return null;
+            int sysLen = 0;
+            for (int i = 0; i < msgs.Count - 1; i++)
+            {
+                var m = msgs[i]?.AsObject();
+                if (m != null && m["role"]?.GetValue<string>() == "system") { sysLen = ContentLen(m); break; }
+            }
+            int toolsCount = 0, toolsLen = 0;
+            var tools = obj["tools"] as System.Text.Json.Nodes.JsonArray;
+            if (tools != null) { toolsCount = tools.Count; toolsLen = tools.ToJsonString().Length; }
+            string msgFp = PrefixHash(obj) ?? "?";
+            return $"S:{sysLen}|T:{toolsCount}:{toolsLen}|M:{msgs.Count}:{msgFp}";
+        }
+        catch { return null; }
+    }
+
+    /// <summary>描述两份分段指纹间的漂移段（v2.23.11，P1-4）：返回如 "system 1200→1380, tools 8→9"；
+    /// 无差异（或任一侧为空/相等）返回 null。段级定位：system / tools / messages 分别对比。</summary>
+    public static string? DescribePrefixDrift(string? prev, string? cur)
+    {
+        if (string.IsNullOrEmpty(prev) || string.IsNullOrEmpty(cur) || prev == cur) return null;
+        var p = ParseSeg(prev); var c = ParseSeg(cur);
+        if (p == null || c == null) return null;
+        var ps = p.Value; var cs = c.Value; // 解引用 nullable 元组
+        var parts = new System.Collections.Generic.List<string>();
+        if (ps.sys != cs.sys) parts.Add($"system {ps.sys}→{cs.sys}");
+        if (ps.tc != cs.tc || ps.tl != cs.tl) parts.Add($"tools {ps.tc}x{ps.tl}→{cs.tc}x{cs.tl}");
+        if (ps.mc != cs.mc) parts.Add($"messages {ps.mc}条→{cs.mc}条");
+        else if (ps.mfp != cs.mfp) parts.Add("messages 内容变化");
+        return parts.Count > 0 ? string.Join(", ", parts) : null;
+    }
+
+    private static (int sys, int tc, int tl, int mc, string mfp)? ParseSeg(string s)
+    {
+        try
+        {
+            int sys = 0, tc = 0, tl = 0, mc = 0; string mfp = "";
+            foreach (var seg in s.Split('|'))
+            {
+                if (seg.StartsWith("S:")) int.TryParse(seg[2..], out sys);
+                else if (seg.StartsWith("T:"))
+                {
+                    var tv = seg[2..].Split(':');
+                    if (tv.Length > 0) int.TryParse(tv[0], out tc);
+                    if (tv.Length > 1) int.TryParse(tv[1], out tl);
+                }
+                else if (seg.StartsWith("M:"))
+                {
+                    var mv = seg[2..].Split(':', 2);
+                    if (mv.Length > 0) int.TryParse(mv[0], out mc);
+                    if (mv.Length > 1) mfp = mv[1];
+                }
+            }
+            return (sys, tc, tl, mc, mfp);
+        }
+        catch { return null; }
+    }
+
 
     /// <summary>工具循环检测：末条消息 role=tool 即判定（与 InjectThinkingMode 的 role 比较口径一致）。</summary>
     public static bool DetectToolLoop(JsonObject obj)

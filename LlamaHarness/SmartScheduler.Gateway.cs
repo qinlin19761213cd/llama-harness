@@ -317,7 +317,8 @@ public partial class SmartScheduler
     /// Metrics 埋点不受影响：RestoreStats.OnPromptEval 持续统计 false_miss。</summary>
     private bool? LogPrefixHash(string key, JsonObject? root)
     {
-        var hash = root != null ? RequestProcessor.PrefixHash(root) : null;
+        // v2.23.11（P1-4）：改用分段指纹（system/tools/messages 三段落点），MISS 时精确定位哪一段漂移
+        var hash = root != null ? RequestProcessor.SegmentPrefixHash(root) : null;
         if (hash == null) return null;
         lock (_kvStateGate)
         {
@@ -328,12 +329,16 @@ public partial class SmartScheduler
                     Log?.Invoke($"[KV-HIT] {key}：前缀未变 → 原生 KV 复用（增量 prefill）");
                 else
                 {
-                    // MISS 分支：区分 HitByDelta 虚假 MISS vs 真实 MISS
+                    // MISS 分支：区分 HitByDelta 虚假 MISS vs 真实 MISS；P1-4 差异定位
+                    var diff = RequestProcessor.DescribePrefixDrift(prev, hash);
+                    if (!string.IsNullOrEmpty(diff)) _lastDriftDiff[key] = diff; // 供 [KV-DRIFT] 告警补充定位
                     var lj = _restoreStats?.LastJudgeResult;
                     if (lj != null && lj.Key.Equals(key, StringComparison.OrdinalIgnoreCase) && lj.Reason == "HitByDelta")
                         Log?.Invoke($"[KV-MISS-DEBUG] {key}：消息指纹变更，HitByDelta 增量复用，增量 prefill={lj.PromptEvalTokens} tokens");
                     else
-                        Log?.Invoke($"[KV-MISS] {key}：前缀变更 → 全量重算");
+                        Log?.Invoke(string.IsNullOrEmpty(diff)
+                            ? $"[KV-MISS] {key}：前缀变更 → 全量重算"
+                            : $"[KV-MISS] {key}：前缀变更 → 全量重算（差异定位：{diff}）");
                 }
                 _prefixHashes[key] = hash;
                 return hit;
