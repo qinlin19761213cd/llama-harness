@@ -27,7 +27,7 @@ public sealed partial class SmartScheduler : IDisposable
     // 休眠/唤醒后残留的死连接由 PooledConnectionLifetime 自然过期淘汰；偶发死连接由 SendAndPipeAsync 500ms 重试兜底。
     private IBackendClient? _backend;
     /// <summary>懒加载后端客户端：baseUrl 依赖运行时探测的 _backendPort，首次使用才构建。</summary>
-    private IBackendClient Backend => _backend ??= new LlamaServerClient($"http://localhost:{_backendPort}");
+    private IBackendClient Backend => _backend ??= BackendClientFactory.Create($"http://localhost:{_backendPort}");
 
     private readonly HttpListener _listener = new();
     private readonly System.Threading.Timer _tickTimer;
