@@ -255,21 +255,38 @@ public class RestoreStatsTests
     [Fact]
     public void Roi_HitByDelta_AccumulatesReuseTokensAndSavedMs()
     {
-        // v2.23.11：hit 时 saved_n 即复用 token；节省时间 = saved_n / prefill tps
+        // v2.23.11：hit 时 saved_n 即复用 token；节省时间用「全量 prefill 参考吞吐」折算
         var s = new RestoreStats(TempPath());
+        // 先触发 FullPrefill，建立真实全量吞吐参考（8242 token / 961.6 tps）
+        s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 8267);
+        s.OnPromptEval(8242, tps: 961.6);
+        // 命中：增量仅 prefill 32 token（增量小批 tps=12.64 应被忽略，用参考 961.6 折算）
         s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 13971);
-        var r = s.OnPromptEval(32, tps: 961.6); // 增量仅 prefill 32 token
+        var r = s.OnPromptEval(32, tps: 12.64);
         Assert.True(r!.Hit);
         Assert.Equal("HitByDelta", r.Reason);
         var snap = s.PerfSnapshot();
         Assert.Equal(13971L, snap.ReuseTokens);
         Assert.Equal(13971 / 961.6 * 1000.0, snap.ReuseSavedMs, 1);
-        // 再次命中累计
+        // 再次命中累计（参考 tps 不变，仍用 961.6）
         s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 13971);
-        s.OnPromptEval(32, tps: 1000.0);
+        s.OnPromptEval(32, tps: 13.0);
         var snap2 = s.PerfSnapshot();
         Assert.Equal(27942L, snap2.ReuseTokens);
-        Assert.Equal(13971 / 961.6 * 1000.0 + 13971 / 1000.0 * 1000.0, snap2.ReuseSavedMs, 1);
+        Assert.Equal(13971 / 961.6 * 1000.0 * 2, snap2.ReuseSavedMs, 1);
+    }
+
+    [Fact]
+    public void Roi_HitWithoutRefTps_AccumulatesTokensOnly()
+    {
+        // v2.23.11：尚无全量 prefill 参考吞吐时，命中只累计复用 token，节省时间暂为 0（不猜默认值）
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k", 0, wrapperHit: true, savedN: 13971);
+        var r = s.OnPromptEval(32, tps: 12.64);
+        Assert.True(r!.Hit);
+        var snap = s.PerfSnapshot();
+        Assert.Equal(13971L, snap.ReuseTokens);
+        Assert.Equal(0.0, snap.ReuseSavedMs, 1);
     }
 
     [Fact]
