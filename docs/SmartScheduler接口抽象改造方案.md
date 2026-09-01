@@ -58,22 +58,25 @@
 
 ## 4. IBackendClient 契约设计
 
-```csharp
 /// <summary>后端推理服务统一契约（llama-server / vLLM 等实现）。仅定义 HTTP 传输能力，不承载业务逻辑。</summary>
 public interface IBackendClient : IDisposable
 {
     // ── ① 推理（透明代理）────────────────────────────────────
     /// <summary>通用转发：request 已含完整 RequestUri/头/body，原样透传（推理路径是透明代理，端点不固定）。
-    /// ResponseHeadersRead 发送，返回原始响应供流式 SSE 直通。</summary>
-    Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct);
+    /// option 透传 HttpClient.SendAsync（流式用 ResponseHeadersRead 直通 SSE）。</summary>
+    Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpCompletionOption option, CancellationToken ct);
 
     /// <summary>非流式 chat/completions（TokenGuard 计量/验证、Lifecycle dummy 预热）：POST /v1/chat/completions，返回原始响应。</summary>
     Task<HttpResponseMessage> ChatCompletionsAsync(string body, CancellationToken ct);
 
+    /// <summary>tokenize 双路径（llama.cpp b10676 移除 /v1/tokenize → 自动回退 /tokenize）。返回 token 数；失败返回 null。</summary>
+    Task<int?> TokenizeAsync(string text, CancellationToken ct);
+
     // ── ② KV 槽位 ───────────────────────────────────────────
-    Task<bool> SlotSaveAsync(int slot, string key, CancellationToken ct);
-    Task<bool> SlotRestoreAsync(int slot, string key, CancellationToken ct);
-    Task<bool> SlotEraseAsync(int slot, CancellationToken ct);
+    /// <summary>槽位 save/restore/erase：body 为 {"filename":"<文件名>.bin"}（快照按文件名管理），返回原始响应供 KvCacheManager 解析 n_saved/n_written。</summary>
+    Task<HttpResponseMessage> SlotSaveAsync(int slot, string filename, CancellationToken ct);
+    Task<HttpResponseMessage> SlotRestoreAsync(int slot, string filename, CancellationToken ct);
+    Task<HttpResponseMessage> SlotEraseAsync(int slot, CancellationToken ct);
 
     // ── ③ 状态探测 ──────────────────────────────────────────
     Task<JsonDocument?> GetSlotsAsync(CancellationToken ct);
@@ -84,18 +87,11 @@ public interface IBackendClient : IDisposable
     /// <summary>GET 任意后端路径（健康/就绪轮询 /v1/models 等），返回原始响应。</summary>
     Task<HttpResponseMessage> ProbeAsync(string path, CancellationToken ct);
 }
-```
 
-**设计要点**：
-- **推理路径是透明代理**（SmartScheduler 把客户端请求原样透传到后端任意路径，仅 chat/completions 做网关改写）——契约用 `SendAsync(HttpRequestMessage)` 透传，而非固定端点方法；响应以 ResponseHeadersRead 返回，SSE 续接/工具隔离管道零改动。
+**设计要点（实施后最终版）**：
+- **推理路径是透明代理**（SmartScheduler 把客户端请求原样透传到后端任意路径，仅 chat/completions 做网关改写）——契约用 `SendAsync(HttpRequestMessage, option, ct)` 透传，
+  option 透传 `HttpClient.SendAsync`（流式 ResponseHeadersRead 直通 SSE）。
 - KV/状态返回可空类型（`JsonDocument?`/`string?`）——后端不可用时上层可判空降级，与现有 `LlamaCppMonitor` 的容错语义一致。
-- `ChatCompletionsAsync(string)` 覆盖 TokenGuard 计量/验证与 Lifecycle dummy 预热（非流式 POST + 读状态码）。
-- `ProbeAsync` 提供通用探测通道（健康检查、Warming 就绪轮询 /v1/models），覆盖 Lifecycle.cs 的裸 `_hc.GetAsync(url)`。
-
----
-
-## 5. 实现：LlamaServerClient
-
 ```csharp
 /// <summary>llama-server 后端实现：统一 HttpClient，端点 URL 集中在 BaseUrl 一处。</summary>
 public sealed class LlamaServerClient : IBackendClient
@@ -107,8 +103,24 @@ public sealed class LlamaServerClient : IBackendClient
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _http = handler != null ? new HttpClient(handler)
-            : new HttpClient(new SocketsHttpHandler { PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60) });
-        _http.Timeout = Timeout.InfiniteTimeSpan;   // 超时由调用方 cts 控制（对齐 SmartScheduler 原 _hc）
+            : new HttpClient(new SocketsHttpHandler
+            {
+                // 对齐 SmartScheduler 原 _hc：池化连接寿命上限 30s + 空闲超时 60s，
+                // 休眠/唤醒后残留死连接由 PooledConnectionLifetime 自然过期淘汰。
+                PooledConnectionLifetime = TimeSpan.FromSeconds(30),
+                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60),
+            });
+        _http.Timeout = Timeout.InfiniteTimeSpan;   // 超时由调用方 cts 控制（对齐原 _hc）
+    }
+
+    // SendAsync：透传 HttpRequestMessage（RequestUri 为完整 URL），option 透传（流式 ResponseHeadersRead 直通 SSE）
+    // ChatCompletionsAsync(string)：POST {base}/v1/chat/completions，Content-Type json
+    // TokenizeAsync：POST {base}/v1/tokenize → 404 回退 POST {base}/tokenize（llama.cpp b10676 移除旧路径）
+    // SlotSave/Restore/Erase → POST {base}/slots/{id}?action=save|restore|erase，body={"filename":"<名>.bin"}
+    // GetSlots/GetProps/GetMetrics → GET {base}/slots | /props | /metrics（非 2xx → null）
+    // ProbeAsync → GET {base}{path}
+}
+```
     }
 
     // SendAsync：透传 HttpRequestMessage（RequestUri 为完整 URL），ResponseHeadersRead 流式直通
@@ -119,12 +131,11 @@ public sealed class LlamaServerClient : IBackendClient
 }
 ```
 
-**收敛说明**：
-- `KvCacheManager` 现有 `SlotUrl(slot, action)` 的 URL 拼接逻辑移入 `LlamaServerClient`，`KvCacheManager` 改为注入 `IBackendClient`（其"save 后轮询 /slots 确认"等业务保留）。
-- `LlamaCppMonitor` 的 `FetchAsync("/slots|/props|/metrics")` 改为注入 `IBackendClient`，DTO 解析（SlotsSnapshot/PropsSnapshot）保留在 Monitor。
-- `TokenGuard.MeasureAsync` 的 `_hc` 参数改为 `IBackendClient`（或复用其 HttpClient）。
-- `SmartScheduler` 的 `_hc` 字段替换为 `IBackendClient _backend`，`ForwardAsync` 中 `_hc.SendAsync(msg)` 改为 `_backend.SendAsync(msg)`，**重试/BadRequest 自愈/SSE 管道逻辑全部保留在 Pipeline 不动**。
-
+**收敛说明（实施后最终版）**：
+- ✅ `KvCacheManager`：构造改注入 `IBackendClient`，删自身 HttpClient/SlotUrl/backendPort；save/restore/erase 走 `SlotSave/SlotRestore/SlotEraseAsync`，响应体自解析 n_saved/n_written（业务保留）。
+- ✅ `LlamaCppMonitorCollector`：删自身 HttpClient/BaseAddress/FetchAsync，改注入 `LlamaServerClient`（端口可变场景内部封装、调用方零改动）；8s 探测超时改链接 cts；Raw 字段用 `JsonDocument.RootElement.GetRawText()` 保留原始文本；DTO 解析（Slots/Props 折叠）保留。
+- ✅ `TokenGuard`：`MeasureAsync`/`GuardAsync`/`CountTokensAsync` 签名改 `IBackendClient`，tokenize 双路径容错下沉 `TokenizeAsync`。
+- ✅ `SmartScheduler`：`_hc` 字段删除，换懒加载 `Backend` 属性（走 `BackendClientFactory.Create`）；ForwardAsync/预热/自愈/重试全部经 `Backend`，**重试/BadRequest 自愈/SSE 管道逻辑全部保留在 Pipeline 不动**（行为等价迁移）。
 ---
 
 ## 6. 多后端扩展（设计验证点）
@@ -171,13 +182,14 @@ public sealed class VllmClient : IBackendClient
 |---|---|
 | ChatCompletions 流式 | URL=`/v1/chat/completions`、方法=POST、body 原样、Accept 头含 `text/event-stream` |
 | ChatCompletions 非流式 | Accept 不含 event-stream |
-| SlotSave/Restore/Erase | URL=`/slots/{id}?action=save\|restore\|erase`、key 入 body |
+| SlotSave/Restore/Erase | URL=`/slots/{id}?action=save\|restore\|erase`、body=`{"filename":"<名>.bin"}`（非 {key}）；返回 HttpResponseMessage（KvCacheManager 自解析 n_saved/n_written） |
 | GetSlots/GetProps | GET 正确路径；404 → 返回 null（判空降级） |
 | GetMetrics | GET /metrics，文本透传 |
 | ProbeAsync | GET 任意路径，返回状态码 |
+| TokenizeAsync | 旧路径 `/v1/tokenize` 计数；404 → 回退新路径 `/tokenize`；两次均失败 → 返回 null |
 | 超时/后端不可用 | 抛 HttpRequestException 或返回 null，上层容错路径验证 |
 
-**回归**：现有 259 测试全绿（行为等价迁移）；如发现行为差异按 bug 修复，不静默调整测试。
+**回归**：Step1 后 259→274 全绿；Step2/3 后 274→277 全绿（行为等价迁移）；如发现行为差异按 bug 修复，不静默调整测试。
 
 ---
 
@@ -185,10 +197,10 @@ public sealed class VllmClient : IBackendClient
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
-| **Step 1** | 新增 `IBackendClient` + `LlamaServerClient`，写 BackendClientTests（Mock 注入） | build 0 错 + 新测试绿 + 259 回归全绿 |
-| **Step 2** | SmartScheduler 系列 `_hc` → `_backend`：ForwardAsync / 预热唤醒 / TokenGuard 调用点替换 | build 0 错 + 回归全绿（行为零变化） |
-| **Step 3** | KvCacheManager + LlamaCppMonitor 收敛到 IBackendClient（删各自 HttpClient） | build 0 错 + 回归全绿 |
-| **Step 4** | 文档：架构设计说明书更新至新版本 + 本方案归档；可选：补 `BackendClientFactory` 骨架（不含 vLLM 实现） | 文档同步 + git 提交 |
+| **Step 1** ✅ | 新增 `IBackendClient` + `LlamaServerClient`，写 BackendClientTests（Mock 注入） | build 0 错 + 259→274 全绿（commit b69f2bb） |
+| **Step 2** ✅ | SmartScheduler 系列 `_hc` → `_backend`：ForwardAsync / 预热唤醒 / TokenGuard 调用点替换 | build 0 错 + 274→277 全绿（commit 7af4427，含误入 react-demo 剔除） |
+| **Step 3** ✅ | LlamaCppMonitorCollector 收敛到 IBackendClient（删自身 HttpClient/FetchAsync） | build 0 错 + 277 全绿（commit 60f2f46） |
+| **Step 4** ✅ | 文档：架构设计说明书更新至 v2.26 + 本方案契约同步 + `BackendClientFactory` 骨架（SmartScheduler 懒加载走工厂） | 文档同步 + git 提交（commit e23a291 + docs） |
 
 **本次不做**（边界）：State 模式改造、ISmartScheduler 整体抽象、vLLM 实际实现、UI/性能模块改动。
 
