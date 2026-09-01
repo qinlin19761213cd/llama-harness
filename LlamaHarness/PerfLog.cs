@@ -100,6 +100,8 @@ public static class PerfLog
         if (p.KvFalseMiss is int kf) sb.Append(",kv_false=").Append(kf);
         if (p.SavedN is int sn) sb.Append(",saved_n=").Append(sn);
         if (p.KvFullPrefill is int kfp) sb.Append(",kv_full=").Append(kfp); // v2.23.10 全量 prefill 累计（前缀漂移观测源）
+        if (p.KvReuseTokens is long krt) sb.Append(",kv_reuse_tok=").Append(krt); // v2.23.11 ROI 复用 token 累计
+        if (p.KvReuseSavedMs is double krs) sb.Append(",kv_reuse_ms=").Append(krs.ToString("F1")); // v2.23.11 ROI 节省时间累计
         WriteLine("count", sb);
     }
 

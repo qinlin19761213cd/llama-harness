@@ -308,7 +308,12 @@ public sealed class StatusPanelView : UserControl
         int drift = stats.DriftAlertCount;
         string driftText = drift > 0 ? $" | ⚠前缀漂移×{drift}" : "";
         if (drift > 0) _lblRestoreHit.ForeColor = Color.FromArgb(0xF5, 0x3F, 0x3F);
-        _lblRestoreHit.Text = $"命中率: {pct:F1}% ({s.TotalHits}/{s.TotalAttempts}) | 误报: {s.FalseRate * 100:F1}%{driftText}{last}";
+        // v2.23.11 ROI 量化：KV 复用累计 token 数 + 折算节省的 prefill 时间（回答"KV 复用值不值"）
+        var roi = stats.PerfSnapshot();
+        string roiText = roi.ReuseTokens > 0
+            ? $" | 复用 {roi.ReuseTokens / 1000.0:F1}Ktok 省~{roi.ReuseSavedMs / 1000.0:F1}s"
+            : "";
+        _lblRestoreHit.Text = $"命中率: {pct:F1}% ({s.TotalHits}/{s.TotalAttempts}) | 误报: {s.FalseRate * 100:F1}%{driftText}{roiText}{last}";
     }
 
     /// <summary>系统资源摘要（CPU/内存）→ 右侧面板。</summary>

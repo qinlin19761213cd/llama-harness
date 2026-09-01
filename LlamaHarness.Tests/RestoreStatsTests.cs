@@ -229,4 +229,59 @@ public class RestoreStatsTests
         Assert.Equal(1, snap.TotalFullPrefill);
         Assert.Equal(1, snap.TotalHits);
     }
+    [Fact]
+    public void TryParsePromptEvalLine_Tps_TokensPerSecond_And_MsPerToken()
+    {
+        // v2.23.11：llama.cpp 新格式 "( 1.04 ms per token, 961.60 tokens per second)"
+        Assert.True(RestoreStats.TryParsePromptEvalLine(
+            "0.10.291.480 I slot print_timing: id  0 | task 4 | prompt eval time =  8571.15 ms / 8242 tokens ( 1.04 ms per token, 961.60 tokens per second)",
+            out var tok, out var ms, out var tps));
+        Assert.Equal(8242, tok);
+        Assert.Equal(8571.15, ms, 2);
+        Assert.Equal(961.60, tps, 2);
+        // 旧格式 "( 5.324 ms/token)" → tps = 1000/5.324
+        Assert.True(RestoreStats.TryParsePromptEvalLine(
+            "srv  prompt eval time = 123.4 ms / 656 tokens ( 5.324 ms/token)",
+            out var tok2, out _, out var tps2));
+        Assert.Equal(656, tok2);
+        Assert.Equal(1000.0 / 5.324, tps2, 2);
+        // 无吞吐段：tokens/ms 仍解析，tps=0
+        Assert.True(RestoreStats.TryParsePromptEvalLine(
+            "prompt eval time = 10.0 ms / 5 tokens", out var tok3, out var ms3, out var tps3));
+        Assert.Equal(5, tok3);
+        Assert.Equal(0, tps3);
+    }
+
+    [Fact]
+    public void Roi_HitByDelta_AccumulatesReuseTokensAndSavedMs()
+    {
+        // v2.23.11：hit 时 saved_n 即复用 token；节省时间 = saved_n / prefill tps
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 13971);
+        var r = s.OnPromptEval(32, tps: 961.6); // 增量仅 prefill 32 token
+        Assert.True(r!.Hit);
+        Assert.Equal("HitByDelta", r.Reason);
+        var snap = s.PerfSnapshot();
+        Assert.Equal(13971L, snap.ReuseTokens);
+        Assert.Equal(13971 / 961.6 * 1000.0, snap.ReuseSavedMs, 1);
+        // 再次命中累计
+        s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 13971);
+        s.OnPromptEval(32, tps: 1000.0);
+        var snap2 = s.PerfSnapshot();
+        Assert.Equal(27942L, snap2.ReuseTokens);
+        Assert.Equal(13971 / 961.6 * 1000.0 + 13971 / 1000.0 * 1000.0, snap2.ReuseSavedMs, 1);
+    }
+
+    [Fact]
+    public void Roi_Miss_DoesNotAccumulate()
+    {
+        // v2.23.11：FullPrefill miss 不累计复用（saved_n 未真正复用）
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k_miss", 0, wrapperHit: true, savedN: 8267);
+        var r = s.OnPromptEval(8242, tps: 961.6);
+        Assert.False(r!.Hit);
+        var snap = s.PerfSnapshot();
+        Assert.Equal(0L, snap.ReuseTokens);
+        Assert.Equal(0.0, snap.ReuseSavedMs, 1);
+    }
 }

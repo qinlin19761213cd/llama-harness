@@ -213,9 +213,9 @@ public sealed partial class SmartScheduler : IDisposable
         // 3.1 Restore 命中率判定：prompt eval tokens 为唯一真值源（mini 状态机，FIFO 归属 + TTL 防错位）
         var rs = _restoreStats;
         if (rs != null && line.Contains("prompt eval time", StringComparison.Ordinal)
-            && RestoreStats.TryParsePromptEvalTokens(line, out int nEval))
+            && RestoreStats.TryParsePromptEvalLine(line, out int nEval, out _, out double evalTps))
         {
-            var r = rs.OnPromptEval(nEval);
+            var r = rs.OnPromptEval(nEval, evalTps); // v2.23.11 传 prefill tps（ROI 折算）
             if (r != null)
             {
                 EmitSlot($"[KV-RESTORE-JUDGE] key={r.Key} hit={(r.Hit ? 1 : 0)} reason={r.Reason} prompt_eval={r.PromptEvalTokens} saved_n={r.SavedN} wrapper_hit={(r.WrapperHit ? 1 : 0)} false_miss={(r.FalseMiss ? 1 : 0)} false_hit={(r.FalseHit ? 1 : 0)}");

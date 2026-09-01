@@ -29,6 +29,8 @@ public sealed class RestoreStats
 
     private int _totalAttempts, _totalHits, _totalFalseMiss, _totalFalseHit;
     private int _totalFullPrefill; // 全量 prefill 累计（kv_full_prefill 累积型指标源）
+    private long _reuseTokens;   // KV 复用累计 token 数（HitByDelta 判定时 saved_n 累计，v2.23.11 ROI）
+    private double _reuseSavedMs; // KV 复用累计节省的 prefill 时间 ms（saved_n/tps 折算，v2.23.11 ROI）
     private int _maxSavedN; // 会话最大 token 偏移（可观测 kv 累积型指标 saved_n 源）
     private readonly HashSet<string> _driftAlertedKeys = new(StringComparer.OrdinalIgnoreCase); // 已告警漂移 key（链归零时移除，允许再次告警）
     private int _driftAlertCount; // 前缀漂移告警累计次数（状态栏展示）
@@ -78,6 +80,10 @@ public sealed class RestoreStats
     /// <summary>静态正则：prompt eval time = X ms / N tokens（与 LlamaStatsParser.PromptRe 同口径）。</summary>
     private static readonly System.Text.RegularExpressions.Regex PromptEvalRe =
         new(@"prompt eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex PrefillTpsRe = // v2.23.11 ROI：llama.cpp 两种 prefill 吞吐行格式
+        new(@"([\d.]+)\s*tokens per second", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex PerTokenMsRe =
+        new(@"([\d.]+)\s*ms/token", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     public RestoreStats(string? statsPath = null)
     {
@@ -104,6 +110,22 @@ public sealed class RestoreStats
         var m = PromptEvalRe.Match(line);
         return m.Success && int.TryParse(m.Groups[2].Value, out tokens);
     }
+    /// <summary>扩展解析（v2.23.11）：prompt eval tokens + 耗时 ms + prefill 吞吐 t/s（ROI 量化数据源，防重复正则匹配）。
+    /// 吞吐支持两种 llama.cpp 行格式："( 1.04 ms per token, 961.60 tokens per second)" 与 "( 5.324 ms/token)"。</summary>
+    public static bool TryParsePromptEvalLine(string line, out int tokens, out double prefillMs, out double tps)
+    {
+        tokens = 0; prefillMs = 0; tps = 0;
+        var m = PromptEvalRe.Match(line);
+        if (!m.Success) return false;
+        int.TryParse(m.Groups[2].Value, out tokens);
+        double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out prefillMs);
+        var t = PrefillTpsRe.Match(line);
+        if (t.Success) { double.TryParse(t.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out tps); }
+        else if (PerTokenMsRe.Match(line) is { Success: true } tp
+                 && double.TryParse(tp.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var mpt) && mpt > 0)
+            tps = 1000.0 / mpt;
+        return tokens > 0;
+    }
 
     /// <summary>请求侧：入队判定上下文（路由完成且该 key 存在快照时调用）。</summary>
     public void RecordRequest(string key, int slot, bool wrapperHit, int savedN)
@@ -115,8 +137,9 @@ public sealed class RestoreStats
         }
     }
 
-    /// <summary>输出侧：收到 prompt eval 行时弹最旧条目并判定。无判定上下文（如非亲和 key 任务）返回 null。</summary>
-    public JudgeResult? OnPromptEval(int tokens)
+    /// <summary>输出侧：收到 prompt eval 行时弹最旧条目并判定。无判定上下文（如非亲和 key 任务）返回 null。
+    /// v2.23.11 增 prefill 吞吐 tps 参数（ROI 量化：hit 时按 saved_n/tps 折算节省时间）。</summary>
+    public JudgeResult? OnPromptEval(int tokens, double tps = 0)
     {
         Pending p;
         lock (_gate)
@@ -138,7 +161,13 @@ public sealed class RestoreStats
         lock (_gate)
         {
             _totalAttempts++;
-            if (hit) _totalHits++;
+            if (hit)
+            {
+                _totalHits++;
+                // v2.23.11 ROI 量化：命中时 saved_n 即本次复用的 token 数；节省时间 = 复用 token / 当次 prefill 吞吐
+                _reuseTokens += p.SavedN;
+                if (tps > 0) _reuseSavedMs += p.SavedN / tps * 1000.0;
+            }
             if (falseMiss) _totalFalseMiss++;
             if (falseHit) _totalFalseHit++;
             if (!_byKey.TryGetValue(p.Key, out var ks))
@@ -214,10 +243,11 @@ public sealed class RestoreStats
         }
     }
 
-    /// <summary>轻量性能快照（可观测累积型指标源，v2.22）：命中数 / false_miss / 最大 savedN / 全量 prefill 累计。开销远低于全量 Snapshot（无 ByKey 构建）。v2.23.10 增全量 prefill 计数。</summary>
-    public (int TotalHits, int TotalFalseMiss, int MaxSavedN, int TotalFullPrefill) PerfSnapshot()
+    /// <summary>轻量性能快照（可观测累积型指标源，v2.22）：命中数 / false_miss / 最大 savedN / 全量 prefill 累计。
+    /// v2.23.10 增全量 prefill 计数；v2.23.11 增 ROI 复用 token 数 + 节省时间 ms。开销远低于全量 Snapshot（无 ByKey 构建）。</summary>
+    public (int TotalHits, int TotalFalseMiss, int MaxSavedN, int TotalFullPrefill, long ReuseTokens, double ReuseSavedMs) PerfSnapshot()
     {
-        lock (_gate) return (_totalHits, _totalFalseMiss, _maxSavedN, _totalFullPrefill);
+        lock (_gate) return (_totalHits, _totalFalseMiss, _maxSavedN, _totalFullPrefill, _reuseTokens, _reuseSavedMs);
     }
 
     /// <summary>前缀漂移告警累计次数（v2.23.10，状态栏/UI 展示）。</summary>
@@ -289,7 +319,7 @@ public sealed class RestoreStats
     {
         return new
         {
-            total = new { attempts = _totalAttempts, hits = _totalHits, false_miss = _totalFalseMiss, false_hit = _totalFalseHit, full_prefill = _totalFullPrefill, drift_alerts = _driftAlertCount },
+            total = new { attempts = _totalAttempts, hits = _totalHits, false_miss = _totalFalseMiss, false_hit = _totalFalseHit, full_prefill = _totalFullPrefill, drift_alerts = _driftAlertCount, reuse_tokens = _reuseTokens, reuse_saved_ms = Math.Round(_reuseSavedMs, 1) },
             by_key = _byKey.Select(kv => new
             {
                 key = kv.Key,
@@ -332,6 +362,8 @@ public sealed class RestoreStats
                     if (t.TryGetProperty("false_hit", out var fh)) _totalFalseHit = fh.GetInt32();
                     if (t.TryGetProperty("full_prefill", out var fp)) _totalFullPrefill = fp.GetInt32();
                     if (t.TryGetProperty("drift_alerts", out var da)) _driftAlertCount = da.GetInt32();
+                    if (t.TryGetProperty("reuse_tokens", out var rt)) _reuseTokens = rt.GetInt64();
+                    if (t.TryGetProperty("reuse_saved_ms", out var rsm)) _reuseSavedMs = rsm.GetDouble();
                 }
                 if (root.TryGetProperty("by_key", out var bk) && bk.ValueKind == JsonValueKind.Array)
                 {

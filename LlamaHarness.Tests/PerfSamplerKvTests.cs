@@ -11,7 +11,7 @@ public class PerfSamplerKvTests
     [Fact]
     public async Task KvStatsProvider_FillsCumulativeFields()
     {
-        var stats = (Hits: 5, FalseMiss: 2, SavedN: 4096, FullPrefill: 3);
+        var stats = (Hits: 5, FalseMiss: 2, SavedN: 4096, FullPrefill: 3, ReuseTokens: 1000L, ReuseSavedMs: 2500.0); // v2.23.11
         using var s = new PerfSampler(() => 0, () => 0, () => stats);
         s.Start();
         await Task.Delay(2300); // 至少 2 个快 tick
@@ -23,6 +23,8 @@ public class PerfSamplerKvTests
         Assert.Equal(2, last.KvFalseMiss);
         Assert.Equal(4096, last.SavedN);
         Assert.Equal(3, last.KvFullPrefill); // v2.23.10 全量 prefill 累积型
+        Assert.Equal(1000L, last.KvReuseTokens); // v2.23.11 ROI 复用 token
+        Assert.Equal(2500.0, last.KvReuseSavedMs); // v2.23.11 ROI 节省时间
     }
 
     [Fact]
