@@ -23,7 +23,12 @@ public partial class SmartScheduler
             _listener.Prefixes.Add($"http://127.0.0.1:{_cfg.Port}/");
             _listener.Start();
             Log?.Invoke($"智能模式：已接管端口 {_cfg.Port}（llama-server 唤醒时将自动选择空闲后端端口，首选 {PreferredBackendPort}），当前显存占用为 0。");
-            _ = AcceptLoopAsync();
+            // v2.23.5：AcceptLoop 必须移出 UI 线程（Task.Run 线程池）——本类请求处理链
+            // （AcceptLoop→HandleRequest→Forward→Pump→自愈/重试/TOKEN-GUARD）的 await 均无
+            // ConfigureAwait(false)，若从 UI 线程启动则所有 IO 恢复点回 UI 线程 SynchronizationContext，
+            // dsh 高并发/报错重试时大量逻辑在 UI 线程执行、消息泵饿死 → 界面假死（实测根因）。
+            // 各 UI 回调（Log/Status/InFlight/Slot）已封送（BeginInvoke/InvokeOnUi），线程池启动安全。
+            _ = Task.Run(AcceptLoopAsync);
         }
         catch (HttpListenerException ex)
         {

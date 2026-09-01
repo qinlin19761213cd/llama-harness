@@ -66,9 +66,8 @@ public partial class SmartScheduler
     {
         if (rtId != null) _timing.MarkSent(rtId); // v2.21 打点：网关预处理完成（读体+路由/裁剪/流式改写），即将发向后端
 
-        using var msg = RequestProcessor.BuildBackendRequest(req, uri, bodyBytes);
-
-        HttpResponseMessage resp = await TryConnectWithRetryAsync(msg);
+        // 连接异常重试需重建请求（HttpRequestMessage 发送后 Content 流即被消费，不能复用同一 msg）——传入工厂，重试时重新构造
+        HttpResponseMessage resp = await TryConnectWithRetryAsync(() => RequestProcessor.BuildBackendRequest(req, uri, bodyBytes));
         using (resp)
         {
             var outResp = ctx.Response;
@@ -82,20 +81,25 @@ public partial class SmartScheduler
         }
     }
 
-    /// <summary>连接异常 500ms 重试一次：后端刚重启/连接被重置时稍等重发（SendAndPipeAsync 子流程①）。</summary>
-    private async Task<HttpResponseMessage> TryConnectWithRetryAsync(HttpRequestMessage msg)
+    /// <summary>连接异常 500ms 重试一次：后端刚重启/连接被重置时稍等重发（SendAndPipeAsync 子流程①）。
+    /// 注意：HttpRequestMessage 发送后其 Content 流即被消费，重试必须经工厂重建请求（复用 bodyBytes 字节，
+    /// 字节流可重复读取）——直接复用同一 msg 会抛 InvalidOperationException "The request message was already sent..."
+    /// （实测连接异常重试路径曾因此二次失败）。</summary>
+    private async Task<HttpResponseMessage> TryConnectWithRetryAsync(Func<HttpRequestMessage> build)
     {
         HttpResponseMessage resp;
         try
         {
+            using var msg = build();
             resp = await _hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
         }
         catch (HttpRequestException)
         {
-            // 连接层瞬时失败（后端刚重启 / 连接被重置）：稍等后重试一次
+            // 连接层瞬时失败（后端刚重启 / 连接被重置）：稍等后重试一次（重建请求，Content 字节流可重读）
             Log?.Invoke("转发连接异常，正在重试…");
             await Task.Delay(ReconnectDelayMs);
-            resp = await _hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
+            using var retryMsg = build();
+            resp = await _hc.SendAsync(retryMsg, HttpCompletionOption.ResponseHeadersRead);
         }
         return resp;
     }
