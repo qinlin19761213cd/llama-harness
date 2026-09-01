@@ -29,4 +29,24 @@ public class MonitorPropsDescTests
     {
         Assert.Equal("", MonitorPanelView.PropDesc(""));
     }
+
+    [Theory]
+    [InlineData("samplers_0", "top_k", "Top-K")]
+    [InlineData("samplers[3]", "dry", "DRY")]
+    [InlineData("stream", "", "流式")]
+    public void PropDescEx_samplers按值动态说明_其余走字典(string fieldName, string value, string expectKeyword)
+    {
+        var desc = MonitorPanelView.PropDescEx(fieldName, value);
+        Assert.Contains(expectKeyword, desc);
+    }
+
+    [Theory]
+    [InlineData("penalties", "惩罚")]
+    [InlineData("top_k", "Top-K")]
+    [InlineData("temperature", "温度")]
+    [InlineData("no_such_sampler", "no_such_sampler")]
+    public void SamplerDesc_已知映射_未知返回原值(string value, string expect)
+    {
+        Assert.Contains(expect, MonitorPanelView.SamplerDesc(value));
+    }
 }

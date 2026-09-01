@@ -304,13 +304,41 @@ public sealed class MonitorPanelView : UserControl
         ["nkeep"] = "保留上下文前 N 个 token（不参与裁剪）",
         ["ndiscard"] = "丢弃上下文前 N 个 token",
         ["ignoreeos"] = "忽略结束符：生成到达到上限，不提前停止",
+        ["stream"] = "流式输出（true = SSE 逐 token 返回，false = 一次性返回完整结果）",
+        ["nprobs"] = "每个生成 token 返回 Top-N 概率（0 = 不返回概率）",
+        ["minkeep"] = "采样时至少保留的候选 token 数（保底）",
+        ["chatformat"] = "聊天模板格式（Content-only / chatml / llama-2 等）",
+        ["reasoningformat"] = "思考内容格式（none = 无思考 / deepseek 等）",
+        ["reasoningincontent"] = "思考内容是否并入正文输出",
+        ["types"] = "指标类型（metrics 输出控制）",
+        ["timingspertoken"] = "是否返回每个 token 的计时信息",
     };
 
-    /// <summary>查参数中文说明：归一化（去 _ / - / 空格 转小写）后查字典，未知返回空串。</summary>
+    /// <summary>采样器名 → 中文说明（/props 的 samplers[N] 管线值，v2.25）。未知返回原值。</summary>
+    internal static string SamplerDesc(string value) => value.ToLowerInvariant() switch
+    {
+        "penalties" => "惩罚（repeat/presence/frequency）",
+        "dry" => "DRY 无感重复抑制",
+        "top_n_sigma" or "topnsigma" => "Top-N-Sigma 截断",
+        "top_k" or "topk" => "Top-K",
+        "typ_p" or "typp" => "典型采样（Typical-P）",
+        "top_p" or "topp" => "核采样（Top-P）",
+        "min_p" or "minp" => "Min-P 截断",
+        "xtc" => "XTC 去重",
+        "temperature" => "温度采样",
+        _ => value,
+    };
+    /// <summary>查参数中文说明：归一化（去 _ / - / 空格 转小写）后查字典，未知返回空串。 </summary>
     internal static string PropDesc(string fieldName)
         => PropsDesc.TryGetValue(
             fieldName.Replace("_", "").Replace("-", "").Replace(" ", "").ToLowerInvariant(),
             out var desc) ? desc : "";
+
+    /// <summary>带值查说明：samplers[N] 按管线值动态说明（采样器管线：+SamplerDesc），其余走 PropDesc 字典。</summary>
+    internal static string PropDescEx(string fieldName, string value)
+        => fieldName.StartsWith("samplers", StringComparison.OrdinalIgnoreCase)
+            ? "采样器管线：" + SamplerDesc(value)
+            : PropDesc(fieldName);
 
     /// <summary>更新 /props 卡片：模型全局配置（三列表格：左标签+中值+右中文说明）+ Raw 折叠。</summary>
     private void UpdatePropsCard(LlamaCppMonitorSnapshot? snap)
@@ -371,7 +399,7 @@ public sealed class MonitorPanelView : UserControl
             _tblPropsBody.Controls.Add(lblVal, 1, rowIdx);
             var lblDesc = new Label
             {
-                Text = PropDesc(fieldName),
+                Text = PropDescEx(fieldName, val),
                 Dock = DockStyle.Fill,
                 ForeColor = Color.FromArgb(0x8A, 0x8A, 0x8A),
                 Font = new Font("Microsoft YaHei UI", 9F),
