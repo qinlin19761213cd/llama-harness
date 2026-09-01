@@ -119,7 +119,8 @@ public partial class SmartScheduler
                 Log?.Invoke("[TOKEN-GUARD-FATAL] real prompt overflow，aggressive trim + KV 废弃 + 重发");
                 // 1. 激进裁剪：预算收紧 50%（比正常预算更严格）
                 int tightBudget = Math.Max(AppConfig.MinInputBudgetTokens, _cfg.GetInputBudget() / 2);
-                var (ok, modified, note) = await TokenGuard.GuardAsync(root, _hc, _backendPort, tightBudget);
+                // 修复：tokenize 失败禁止 fail-open 穿透（否则重发未裁剪 body 死循环 400），退化为字符级保守估算继续裁剪
+                var (ok, modified, note) = await TokenGuard.GuardAsync(root, _hc, _backendPort, tightBudget, failOpenOnTokenizeError: false);
                 if (!ok)
                 {
                     // 裁剪失败：原样返回 400

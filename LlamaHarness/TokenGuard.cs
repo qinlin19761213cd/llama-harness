@@ -6,44 +6,55 @@ namespace LlamaHarness;
 
 /// <summary>
 /// Token Guard：代理层 token 预估算 + 裁剪，防 "request exceeds context size" 400 错误。
-/// - 计数：POST /v1/tokenize 到后端 llama-server（真实分词器，本地毫秒级）
+/// - 计数：POST /tokenize（优先 /v1/tokenize 兼容旧版，404 回退 /tokenize）到后端 llama-server（真实分词器，本地毫秒级）
 /// - 预算：CtxSize ÷ Parallel − ReservedOutputTokens（多槽均分总容量）
 /// - 裁剪：轮次制（整轮删除最旧对话，保证 tool_call/tool_result 配对完整）
 ///   + 内容兜底（单条超大消息如巨型 tool_result 做字符级截断）
-/// - 降级：tokenize 失败 → 原样转发不阻断；无 user 消息 → 透传
+/// - 降级：tokenize 失败 → 默认原样转发不阻断（fail-open）；400 自愈等兜底场景 fail-closed（字符级估算继续裁剪）
 /// </summary>
 public static class TokenGuard
 {
     private const int MinTrimLen = 50;
     private const int MinTrimContentLen = 200;
     private const int GuardTimeoutSeconds = 30;
-    /// <summary>经后端 /v1/tokenize 端点计数 token。失败返回 null（调用方降级原样转发）。</summary>
+    /// <summary>经后端 tokenize 端点计数 token。优先 /v1/tokenize（OpenAI 兼容旧路径），失败回退 /tokenize（llama.cpp b10676+ 新路径）。
+    /// 故障实证：b10676 已移除 /v1/tokenize（实测 404），tokenize 迁移到 /tokenize；双路径保证新旧版本兼容。
+    /// 每次失败输出 [TOKEN-GUARD-WARN] 诊断日志（HTTP 码/异常），消除"只见 FAILED 不知为何"的盲区。全部失败返回 null（调用方降级）。</summary>
     public static async Task<int?> CountTokensAsync(HttpClient hc, int port, string text)
     {
-        try
+        string[] endpoints = { "/v1/tokenize", "/tokenize" };
+        for (int i = 0; i < endpoints.Length; i++)
         {
-            var payload = new JsonObject { ["content"] = text };
-            using var req = new HttpRequestMessage(HttpMethod.Post, $"http://localhost:{port}/v1/tokenize")
+            try
             {
-                Content = new StringContent(payload.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
-            };
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GuardTimeoutSeconds));
-            using var resp = await hc.SendAsync(req, cts.Token);
-            if (!resp.IsSuccessStatusCode) return null;
-            var body = await resp.Content.ReadAsStringAsync(cts.Token);
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            // 兼容两种响应格式：{"tokens":[...]}（数数组长度）/ {"n_tokens":N}
-            if (root.TryGetProperty("tokens", out var toks) && toks.ValueKind == JsonValueKind.Array)
-                return toks.GetArrayLength();
-            if (root.TryGetProperty("n_tokens", out var n) && n.TryGetInt32(out var v))
-                return v;
-            return null;
+                var payload = new JsonObject { ["content"] = text };
+                using var req = new HttpRequestMessage(HttpMethod.Post, $"http://localhost:{port}{endpoints[i]}")
+                {
+                    Content = new StringContent(payload.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
+                };
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GuardTimeoutSeconds));
+                using var resp = await hc.SendAsync(req, cts.Token);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} → HTTP {(int)resp.StatusCode}，尝试下一路径");
+                    continue;
+                }
+                var body = await resp.Content.ReadAsStringAsync(cts.Token);
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                // 兼容两种响应格式：{"tokens":[...]}（数数组长度）/ {"n_tokens":N}
+                if (root.TryGetProperty("tokens", out var toks) && toks.ValueKind == JsonValueKind.Array)
+                    return toks.GetArrayLength();
+                if (root.TryGetProperty("n_tokens", out var n) && n.TryGetInt32(out var v))
+                    return v;
+                Console.WriteLine($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 响应缺少 tokens/n_tokens 字段，尝试下一路径");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 异常：{ex.Message}，尝试下一路径");
+            }
         }
-        catch
-        {
-            return null; // 后端忙 / 超时：降级
-        }
+        return null; // 全部路径失败：降级
     }
 
     /// <summary>
@@ -82,12 +93,20 @@ public static class TokenGuard
     /// </summary>
     public static async Task<(bool Ok, bool Modified, string? Note)> GuardAsync(
         JsonObject root, HttpClient hc, int backendPort, int budget,
-        Func<string, Task<int?>>? countTokens = null)
+        Func<string, Task<int?>>? countTokens = null, bool failOpenOnTokenizeError = true)
     {
         var messages = root["messages"] as JsonArray;
         if (messages == null || messages.Count == 0) return (true, false, null);
 
-        Func<string, Task<int?>> counter = countTokens ?? ((string t) => CountTokensAsync(hc, backendPort, t));
+        // tokenize 失败时：failOpenOnTokenizeError=true（默认）→ 返回 null 触发降级放行（正常热路径保持 fail-open）；
+        // =false（400 自愈兜底）→ 退化为字符级保守估算，保证裁剪决策仍有依据，禁止未裁剪穿透死循环
+        Func<string, Task<int?>> rawCounter = countTokens ?? ((string t) => CountTokensAsync(hc, backendPort, t));
+        Func<string, Task<int?>> counter = async t =>
+        {
+            int? n = await rawCounter(t);
+            if (n != null) return n;
+            return failOpenOnTokenizeError ? null : EstimateTokensByChars(t);
+        };
 
         // O-14：计数口径对齐——送 messages 文本（role+content）tokenize，而非原始 body（含 model/temperature 等非上下文字段，计数偏高）
         int count = await counter(BuildMessagesText(messages)) ?? -1;
@@ -280,5 +299,18 @@ public static class TokenGuard
             if (c != null && c.Length > bestLen) { bestLen = c.Length; best = i; }
         }
         return best;
+    }
+
+    /// <summary>字符级保守估算 token 数（tokenize 端点不可用时的兜底口径）：CJK 字符≈1 token、其余≈len/4，取偏保守（宁多裁不 400）。</summary>
+    public static int EstimateTokensByChars(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        int cjk = 0, other = 0;
+        foreach (char ch in text)
+        {
+            if (ch >= 0x4E00 && ch <= 0x9FFF) cjk++;
+            else other++;
+        }
+        return Math.Max(1, cjk + other / 4);
     }
 }
