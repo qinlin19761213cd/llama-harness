@@ -300,6 +300,11 @@ public sealed class SlotAffinity
         }
     }
 
+    /// <summary>是否应跳过 Tool 链会话锁定（§4.5）：单槽位（parallel=1，cap=slotCount-1=0）时返回 true。
+    /// 单槽位无多槽驱逐竞争，Tool 链锁定 SetPreemptive(true) 会独占唯一槽位，违反"至少 1 槽给非强占新任务"
+    /// 不变量，其他 key 任务最长排队 30s（v2.23.7 修复依据）。多槽位返回 false（保留锁定保护）。</summary>
+    public bool ShouldSkipToolLoopLock() => _slotCount <= 1;
+
     /// <summary>设置指定 Key 的 KV Cache 开关（UI 调用）。</summary>
     public void SetKvCache(string key, bool value)
     {

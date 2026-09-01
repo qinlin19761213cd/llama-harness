@@ -184,6 +184,10 @@ public partial class SmartScheduler
     {
         if (key == null || root == null) return;
         bool inToolLoop = RequestProcessor.DetectToolLoop(root);
+        // v2.23.7：单槽位（parallel=1 → cap=slotCount-1=0）跳过 Tool 链加锁——SetPreemptive(true)
+        // 会独占唯一槽位，违反"至少 1 槽给非强占新任务"不变量，其他 key 任务最长排队 30s（实测）；
+        // 单槽位无多槽驱逐竞争，锁定无保护意义。解锁分支保留以清理可能的残留锁定。
+        if (aff.ShouldSkipToolLoopLock()) inToolLoop = false;
         bool didLock = false, didUnlock = false;
         bool alreadyPreemptive = aff.IsPreemptive(key);
         lock (_kvStateGate)
