@@ -59,7 +59,10 @@ public sealed class MainFormPresenter
         _view.SyncConfigFromUi();
         try
         {
-            await _scheduler.LaunchNowAsync();
+            // v2.23.6：唤醒链（EnsureRunning→WakeUp→KV restore→dummy 预热）整体在 Task.Run 线程池执行——
+            // 其内部 await 均无 ConfigureAwait(false)，若从 UI 线程启动则恢复点回 UI 线程 SynchronizationContext，
+            // 唤醒期间大量逻辑（KV restore/预热/日志/SetPhase 回调）穿插占用 UI 线程。后台执行 + 事件封送安全。
+            await Task.Run(() => _scheduler.LaunchNowAsync());
         }
         catch (Exception ex)
         {
@@ -93,7 +96,9 @@ public sealed class MainFormPresenter
         _view.SetClearCacheEnabled(false);
         try
         {
-            int deleted = await kv.ClearAllAsync();
+            // v2.23.6：清缓存（删 *.bin 同步循环 + 逐槽 erase）移出 UI 线程——ClearAllAsync 内的同步段
+            // 在 await 恢复的线程执行，直接从 UI 线程调用会占用 UI 线程。
+            int deleted = await Task.Run(() => kv.ClearAllAsync());
             _view.AppendLog($"KV Cache 已清空：删除 {deleted} 个缓存文件，全部槽位已擦除。");
         }
         catch (Exception ex)

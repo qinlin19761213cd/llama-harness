@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using Xunit;
 
 namespace LlamaHarness.Tests;
@@ -57,6 +58,39 @@ public class HttpRequestRetryTests
             resp = await hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
         }
         catch (HttpRequestException)
+        {
+            using var retryMsg = new HttpRequestMessage(HttpMethod.Post, "http://localhost:1/v1/chat/completions")
+            { Content = new StringContent("hi") };
+            resp = await hc.SendAsync(retryMsg, HttpCompletionOption.ResponseHeadersRead);
+        }
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(2, attempts);
+        resp.Dispose();
+    }
+
+    [Fact]
+    public async Task SocketException_AlsoTriggersRetry()
+    {
+        // v2.23.6：实测部分连接失败（WSAENOTCONN "企图在不存在的网络连接上进行操作"）被 HttpClient
+        // 直抛为 SocketException 而非包装成 HttpRequestException——catch 范围必须覆盖它才不漏重试机会。
+        int attempts = 0;
+        using var hc = new HttpClient(new StubHandler(_ =>
+        {
+            attempts++;
+            if (attempts == 1)
+                throw new SocketException((int)SocketError.NotConnected);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }));
+
+        HttpResponseMessage resp;
+        try
+        {
+            using var msg = new HttpRequestMessage(HttpMethod.Post, "http://localhost:1/v1/chat/completions")
+            { Content = new StringContent("hi") };
+            resp = await hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or SocketException)
         {
             using var retryMsg = new HttpRequestMessage(HttpMethod.Post, "http://localhost:1/v1/chat/completions")
             { Content = new StringContent("hi") };

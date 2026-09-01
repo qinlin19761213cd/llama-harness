@@ -93,9 +93,12 @@ public partial class SmartScheduler
             using var msg = build();
             resp = await _hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
         }
-        catch (HttpRequestException)
+        catch (Exception ex) when (ex is HttpRequestException or IOException or System.Net.Sockets.SocketException)
         {
-            // 连接层瞬时失败（后端刚重启 / 连接被重置）：稍等后重试一次（重建请求，Content 字节流可重读）
+            // 连接层瞬时失败（后端刚重启 / 连接被重置 / 连接不存在）：稍等后重试一次（重建请求，Content 字节流可重读）。
+            // v2.23.6：catch 范围从 HttpRequestException 扩到 IOException/SocketException——实测某些连接失败
+            // （如 WSAENOTCONN "企图在不存在的网络连接上进行操作"）被 HttpClient 直抛而非包装成 HttpRequestException，
+            // 之前因此漏掉重试机会直接失败。
             Log?.Invoke("转发连接异常，正在重试…");
             await Task.Delay(ReconnectDelayMs);
             using var retryMsg = build();
