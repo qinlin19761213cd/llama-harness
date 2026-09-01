@@ -7,45 +7,71 @@ namespace LlamaHarness;
 public partial class MainForm : Form
 {
 
+    // —— 数字输入框范围（v2.24：NumericUpDown → TextBox，消除滚轮误改参数；范围仅用于保存时 clamp）——
+    private const int NUM_PORT_MIN = 1,       NUM_PORT_MAX = 65534;
+    private const int NUM_CTX_MIN = 256,      NUM_CTX_MAX = 1_048_576;
+    private const int NUM_NGL_MIN = 0,        NUM_NGL_MAX = 999;
+    private const int NUM_PARALLEL_MIN = 1,   NUM_PARALLEL_MAX = 128;
+    private const int NUM_THREADS_MIN = 1,    NUM_THREADS_MAX = 512;
+    private const int NUM_IDLE_MIN = 1,       NUM_IDLE_MAX = 120;
+    private const int NUM_RESERVED_MIN = 512, NUM_RESERVED_MAX = 131_072;
+    private const int NUM_OVERHEAD_MIN = 0,   NUM_OVERHEAD_MAX = 65_536;
+    private const int NUM_CACHERAM_MIN = 0,   NUM_CACHERAM_MAX = 16_384;
+    private const int NUM_CONT_MIN = 1,       NUM_CONT_MAX = 50;
+    private const int NUM_CTIMEOUT_MIN = 30,  NUM_CTIMEOUT_MAX = 3600;
+    private const int NUM_RESTART_MIN = 0,    NUM_RESTART_MAX = 10;
+    private const int NUM_UBATCH_MIN = 1,     NUM_UBATCH_MAX = 65_536;
+    private const int NUM_BATCH_MIN = 1,      NUM_BATCH_MAX = 65_536;
+    private const int NUM_DRAFT_MIN = 0,      NUM_DRAFT_MAX = 8;
+    private const int NUM_BTHREADS_MIN = 0,   NUM_BTHREADS_MAX = 512;
+
+    /// <summary>数字输入框（v2.24）：普通 TextBox + 只允许数字键——无滚轮调值，查看配置滚动窗口不再误改参数；范围由常量在保存时 clamp。</summary>
+    private static TextBox NumBox()
+    {
+        var tb = new TextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
+        tb.KeyPress += (_, e) => { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true; };
+        return tb;
+    }
+
     // —— 参数控件（Configuration 面板内）——
     private readonly TextBox _txtExe = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly Button _btnBrowseExe = new() { Text = "…", Size = new Size(32, 28), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(55, 55, 55), ForeColor = Color.White };
     private readonly TextBox _txtModel = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly Button _btnBrowseModel = new() { Text = "…", Size = new Size(32, 28), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(55, 55, 55), ForeColor = Color.White };
-    private readonly NumericUpDown _numPort = new() { Minimum = 1, Maximum = 65534, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numCtx = new() { Minimum = 256, Maximum = 1_048_576, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numNgl = new() { Minimum = 0, Maximum = 999, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numParallel = new() { Minimum = 1, Maximum = 128, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numPort = NumBox();
+    private readonly TextBox _numCtx = NumBox();
+    private readonly TextBox _numNgl = NumBox();
+    private readonly TextBox _numParallel = NumBox();
     private readonly CheckBox _chkNoKv = new() { Text = "--no-kv-unified", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly NumericUpDown _numThreads = new() { Minimum = 1, Maximum = 512, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numThreads = NumBox();
     private readonly TextBox _txtExtra = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly CheckBox _chkAuto = new() { Text = "智能按需模式（推荐）", AutoSize = true, ForeColor = Color.FromArgb(200, 200, 200) }; // AutoSize：紧跟"模式:"标签同行
-    private readonly NumericUpDown _numIdleMin = new() { Minimum = 1, Maximum = 120, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numIdleMin = NumBox();
     private readonly TextBox _txtPcoreMask = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly CheckBox _chkForceStream = new() { Text = "强制流式", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
     private readonly TextBox _txtKvCachePath = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly CheckBox _chkTokenGuard = new() { Text = "Token Guard（防上下文超长）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly NumericUpDown _numReservedTokens = new() { Minimum = 512, Maximum = 131_072, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numPromptOverhead = new() { Minimum = 0, Maximum = 65_536, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numCacheRam = new() { Minimum = 0, Maximum = 16_384, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numReservedTokens = NumBox();
+    private readonly TextBox _numPromptOverhead = NumBox();
+    private readonly TextBox _numCacheRam = NumBox();
     private readonly CheckBox _chkNoCacheIdleSlots = new() { Text = "禁空闲slot入缓存", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
     private readonly CheckBox _chkContinuation = new() { Text = "输出续接（截断自动续写）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly NumericUpDown _numMaxContinuations = new() { Minimum = 1, Maximum = 50, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numContTimeout = new() { Minimum = 30, Maximum = 3600, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numMaxContinuations = NumBox();
+    private readonly TextBox _numContTimeout = NumBox();
     private readonly CheckBox _chkCrashRecover = new() { Text = "bad_alloc 自动恢复（快照接续/重放）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
-    private readonly NumericUpDown _numMaxRestarts = new() { Minimum = 0, Maximum = 10, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numMaxRestarts = NumBox();
     // Prefill 吞吐参数（阶段二调优：ubatch/batch/KV 量化/flash-attn/投机解码/batch 线程）
     private readonly TextBox _txtLoadMode = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
-    private readonly NumericUpDown _numUbatch = new() { Minimum = 1, Maximum = 65536, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-    private readonly NumericUpDown _numBatch = new() { Minimum = 1, Maximum = 65536, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numUbatch = NumBox();
+    private readonly TextBox _numBatch = NumBox();
     private readonly TextBox _txtCacheTypeKv = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly CheckBox _chkFlashAttn = new() { Text = "--flash-attn", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
     private readonly TextBox _txtSpecType = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
-    private readonly NumericUpDown _numSpecDraftNMax = new() { Minimum = 0, Maximum = 8, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numSpecDraftNMax = NumBox();
     private readonly CheckBox _chkRequestDump = new() { Text = "request-dump（dump 所有请求到 logs/request_dump.log）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
     private readonly CheckBox _chkUnknownAutoBind = new() { Text = "未知应用自动识别（独立 KV 快照）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) }; // v2.23.8 未知应用自动兜底
     private readonly ComboBox _cmbLogQueuePolicy = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, ForeColor = Color.White };
-    private readonly NumericUpDown _numBatchThreads = new() { Minimum = 0, Maximum = 512, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
+    private readonly TextBox _numBatchThreads = NumBox();
     // §4.2 自动强占（冻结防驱逐）/ 自动快照恢复（不锁槽）：checkbox 由 affinity_rules 动态生成（规则表即来源，新增业务仅配置）
     private CheckBox[] _autoPreChecks = Array.Empty<CheckBox>();
     private CheckBox[] _snapChecks = Array.Empty<CheckBox>();

@@ -14,39 +14,39 @@ public partial class MainForm
     {
         _txtExe.Text = cfg.ExePath;
         _txtModel.Text = cfg.ModelPath;
-        _numPort.Value = Math.Clamp(cfg.Port, (int)_numPort.Minimum, (int)_numPort.Maximum);
-        _numCtx.Value = Math.Clamp(cfg.CtxSize, (int)_numCtx.Minimum, (int)_numCtx.Maximum);
-        _numNgl.Value = Math.Clamp(cfg.Ngl, (int)_numNgl.Minimum, (int)_numNgl.Maximum);
-        _numParallel.Value = Math.Clamp(cfg.Parallel, (int)_numParallel.Minimum, (int)_numParallel.Maximum);
+        _numPort.Text = Math.Clamp(cfg.Port, NUM_PORT_MIN, NUM_PORT_MAX).ToString();
+        _numCtx.Text = Math.Clamp(cfg.CtxSize, NUM_CTX_MIN, NUM_CTX_MAX).ToString();
+        _numNgl.Text = Math.Clamp(cfg.Ngl, NUM_NGL_MIN, NUM_NGL_MAX).ToString();
+        _numParallel.Text = Math.Clamp(cfg.Parallel, NUM_PARALLEL_MIN, NUM_PARALLEL_MAX).ToString();
         _chkNoKv.Checked = cfg.NoKvUnified;
-        _numThreads.Value = Math.Clamp(cfg.Threads, (int)_numThreads.Minimum, (int)_numThreads.Maximum);
+        _numThreads.Text = Math.Clamp(cfg.Threads, NUM_THREADS_MIN, NUM_THREADS_MAX).ToString();
         _txtLoadMode.Text = cfg.LoadMode;
-        _numUbatch.Value = Math.Clamp(cfg.UbatchSize, (int)_numUbatch.Minimum, (int)_numUbatch.Maximum);
-        _numBatch.Value = Math.Clamp(cfg.BatchSize, (int)_numBatch.Minimum, (int)_numBatch.Maximum);
+        _numUbatch.Text = Math.Clamp(cfg.UbatchSize, NUM_UBATCH_MIN, NUM_UBATCH_MAX).ToString();
+        _numBatch.Text = Math.Clamp(cfg.BatchSize, NUM_BATCH_MIN, NUM_BATCH_MAX).ToString();
         _txtCacheTypeKv.Text = cfg.CacheTypeKv;
         _chkFlashAttn.Checked = cfg.FlashAttn;
         _txtSpecType.Text = cfg.SpecType;
-        _numSpecDraftNMax.Value = Math.Clamp(cfg.SpecDraftNMax, (int)_numSpecDraftNMax.Minimum, (int)_numSpecDraftNMax.Maximum);
+        _numSpecDraftNMax.Text = Math.Clamp(cfg.SpecDraftNMax, NUM_DRAFT_MIN, NUM_DRAFT_MAX).ToString();
         _chkRequestDump.Checked = cfg.RequestDumpEnabled;
         _chkUnknownAutoBind.Checked = cfg.UnknownAppAutoBind; // v2.23.8 未知应用自动兜底
         _cmbLogQueuePolicy.SelectedIndex = cfg.LogQueueFullPolicy == QueueFullPolicy.DropOldest ? 1 : 0;
-        _numBatchThreads.Value = Math.Clamp(cfg.BatchThreads, (int)_numBatchThreads.Minimum, (int)_numBatchThreads.Maximum);
+        _numBatchThreads.Text = Math.Clamp(cfg.BatchThreads, NUM_BTHREADS_MIN, NUM_BTHREADS_MAX).ToString();
         _txtExtra.Text = cfg.ExtraArgs;
         _chkAuto.Checked = cfg.AutoMode;
-        _numIdleMin.Value = Math.Clamp(cfg.IdleMinutes, (int)_numIdleMin.Minimum, (int)_numIdleMin.Maximum);
+        _numIdleMin.Text = Math.Clamp(cfg.IdleMinutes, NUM_IDLE_MIN, NUM_IDLE_MAX).ToString();
         _txtPcoreMask.Text = cfg.PCoreMask;
         _chkForceStream.Checked = cfg.ForceStream;
         _txtKvCachePath.Text = cfg.KvCachePath;
         _chkTokenGuard.Checked = cfg.TokenGuardEnabled;
-        _numReservedTokens.Value = Math.Clamp(cfg.ReservedOutputTokens, (int)_numReservedTokens.Minimum, (int)_numReservedTokens.Maximum);
-        _numPromptOverhead.Value = Math.Clamp(cfg.ReservedPromptOverhead, (int)_numPromptOverhead.Minimum, (int)_numPromptOverhead.Maximum);
-        _numCacheRam.Value = Math.Clamp(cfg.CacheRamMiB, (int)_numCacheRam.Minimum, (int)_numCacheRam.Maximum);
+        _numReservedTokens.Text = Math.Clamp(cfg.ReservedOutputTokens, NUM_RESERVED_MIN, NUM_RESERVED_MAX).ToString();
+        _numPromptOverhead.Text = Math.Clamp(cfg.ReservedPromptOverhead, NUM_OVERHEAD_MIN, NUM_OVERHEAD_MAX).ToString();
+        _numCacheRam.Text = Math.Clamp(cfg.CacheRamMiB, NUM_CACHERAM_MIN, NUM_CACHERAM_MAX).ToString();
         _chkNoCacheIdleSlots.Checked = cfg.NoCacheIdleSlots;
         _chkContinuation.Checked = cfg.ContinuationEnabled;
-        _numMaxContinuations.Value = Math.Clamp(cfg.MaxContinuations, (int)_numMaxContinuations.Minimum, (int)_numMaxContinuations.Maximum);
-        _numContTimeout.Value = Math.Clamp(cfg.ContinuationTimeoutSeconds, (int)_numContTimeout.Minimum, (int)_numContTimeout.Maximum);
+        _numMaxContinuations.Text = Math.Clamp(cfg.MaxContinuations, NUM_CONT_MIN, NUM_CONT_MAX).ToString();
+        _numContTimeout.Text = Math.Clamp(cfg.ContinuationTimeoutSeconds, NUM_CTIMEOUT_MIN, NUM_CTIMEOUT_MAX).ToString();
         _chkCrashRecover.Checked = cfg.CrashRecoveryEnabled;
-        _numMaxRestarts.Value = Math.Clamp(cfg.MaxAutoRestarts, (int)_numMaxRestarts.Minimum, (int)_numMaxRestarts.Maximum);
+        _numMaxRestarts.Text = Math.Clamp(cfg.MaxAutoRestarts, NUM_RESTART_MIN, NUM_RESTART_MAX).ToString();
         var autoPreSet = new HashSet<string>(cfg.AutoPreemptiveApps.Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim()), StringComparer.OrdinalIgnoreCase);
         foreach (var c in _autoPreChecks) c.Checked = autoPreSet.Contains((string)c.Tag!);
@@ -63,44 +63,48 @@ public partial class MainForm
     {
         _config.ExePath = _txtExe.Text.Trim();
         _config.ModelPath = _txtModel.Text.Trim();
-        _config.Port = (int)_numPort.Value;
-        _config.CtxSize = (int)_numCtx.Value;
-        _config.Ngl = (int)_numNgl.Value;
-        _config.Parallel = (int)_numParallel.Value;
+        _config.Port = ReadInt(_numPort, NUM_PORT_MIN, NUM_PORT_MAX, _config.Port);
+        _config.CtxSize = ReadInt(_numCtx, NUM_CTX_MIN, NUM_CTX_MAX, _config.CtxSize);
+        _config.Ngl = ReadInt(_numNgl, NUM_NGL_MIN, NUM_NGL_MAX, _config.Ngl);
+        _config.Parallel = ReadInt(_numParallel, NUM_PARALLEL_MIN, NUM_PARALLEL_MAX, _config.Parallel);
         _config.NoKvUnified = _chkNoKv.Checked;
-        _config.Threads = (int)_numThreads.Value;
+        _config.Threads = ReadInt(_numThreads, NUM_THREADS_MIN, NUM_THREADS_MAX, _config.Threads);
         _config.LoadMode = _txtLoadMode.Text.Trim();
-        _config.UbatchSize = (int)_numUbatch.Value;
-        _config.BatchSize = (int)_numBatch.Value;
+        _config.UbatchSize = ReadInt(_numUbatch, NUM_UBATCH_MIN, NUM_UBATCH_MAX, _config.UbatchSize);
+        _config.BatchSize = ReadInt(_numBatch, NUM_BATCH_MIN, NUM_BATCH_MAX, _config.BatchSize);
         _config.CacheTypeKv = _txtCacheTypeKv.Text.Trim();
         _config.FlashAttn = _chkFlashAttn.Checked;
         _config.SpecType = _txtSpecType.Text.Trim();
-        _config.SpecDraftNMax = (int)_numSpecDraftNMax.Value;
+        _config.SpecDraftNMax = ReadInt(_numSpecDraftNMax, NUM_DRAFT_MIN, NUM_DRAFT_MAX, _config.SpecDraftNMax);
         _config.RequestDumpEnabled = _chkRequestDump.Checked;
         _config.UnknownAppAutoBind = _chkUnknownAutoBind.Checked;
         var logPolicy = _cmbLogQueuePolicy.SelectedIndex == 1 ? QueueFullPolicy.DropOldest : QueueFullPolicy.DropNewest;
         _config.LogQueueFullPolicy = logPolicy;
         LogFile.Configure(logPolicy); // 运行时立即生效
-        _config.BatchThreads = (int)_numBatchThreads.Value;
+        _config.BatchThreads = ReadInt(_numBatchThreads, NUM_BTHREADS_MIN, NUM_BTHREADS_MAX, _config.BatchThreads);
         _config.ExtraArgs = _txtExtra.Text.Trim();
         _config.AutoMode = _chkAuto.Checked;
-        _config.IdleMinutes = (int)_numIdleMin.Value;
+        _config.IdleMinutes = ReadInt(_numIdleMin, NUM_IDLE_MIN, NUM_IDLE_MAX, _config.IdleMinutes);
         _config.PCoreMask = _txtPcoreMask.Text.Trim();
         _config.ForceStream = _chkForceStream.Checked;
         _config.KvCachePath = _txtKvCachePath.Text.Trim();
         _config.TokenGuardEnabled = _chkTokenGuard.Checked;
-        _config.ReservedOutputTokens = (int)_numReservedTokens.Value;
-        _config.ReservedPromptOverhead = (int)_numPromptOverhead.Value;
-        _config.CacheRamMiB = (int)_numCacheRam.Value;
+        _config.ReservedOutputTokens = ReadInt(_numReservedTokens, NUM_RESERVED_MIN, NUM_RESERVED_MAX, _config.ReservedOutputTokens);
+        _config.ReservedPromptOverhead = ReadInt(_numPromptOverhead, NUM_OVERHEAD_MIN, NUM_OVERHEAD_MAX, _config.ReservedPromptOverhead);
+        _config.CacheRamMiB = ReadInt(_numCacheRam, NUM_CACHERAM_MIN, NUM_CACHERAM_MAX, _config.CacheRamMiB);
         _config.NoCacheIdleSlots = _chkNoCacheIdleSlots.Checked;
         _config.ContinuationEnabled = _chkContinuation.Checked;
-        _config.MaxContinuations = (int)_numMaxContinuations.Value;
-        _config.ContinuationTimeoutSeconds = (int)_numContTimeout.Value;
+        _config.MaxContinuations = ReadInt(_numMaxContinuations, NUM_CONT_MIN, NUM_CONT_MAX, _config.MaxContinuations);
+        _config.ContinuationTimeoutSeconds = ReadInt(_numContTimeout, NUM_CTIMEOUT_MIN, NUM_CTIMEOUT_MAX, _config.ContinuationTimeoutSeconds);
         _config.CrashRecoveryEnabled = _chkCrashRecover.Checked;
-        _config.MaxAutoRestarts = (int)_numMaxRestarts.Value;
+        _config.MaxAutoRestarts = ReadInt(_numMaxRestarts, NUM_RESTART_MIN, NUM_RESTART_MAX, _config.MaxAutoRestarts);
         _config.AutoPreemptiveApps = string.Join(",", _autoPreChecks.Where(c => c.Checked).Select(c => (string)c.Tag!));
         _config.AutoSnapshotKeys = string.Join(",", _snapChecks.Where(c => c.Checked).Select(c => (string)c.Tag!));
     }
+
+    /// <summary>从数字 TextBox 安全读取整数值：TryParse + clamp 到 [min,max]，解析失败回落 fallback（保留原值，防非法输入破坏配置）。</summary>
+    private static int ReadInt(TextBox tb, int min, int max, int fallback)
+        => int.TryParse(tb.Text.Trim(), out var v) ? Math.Clamp(v, min, max) : fallback;
 
     /// <summary>自动查找 llama-server.exe：配置路径无效时用搜索结果回填。</summary>
     private void AutoFindExe()

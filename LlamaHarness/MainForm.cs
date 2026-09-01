@@ -124,38 +124,38 @@ public partial class MainForm : Form
         // 参数编辑实时同步到共享配置（唤醒时自动使用最新值）
         _txtExe.TextChanged += (_, _) => _presenter.OnParamEdited();
         _txtModel.TextChanged += (_, _) => _presenter.OnParamEdited();
-        _numPort.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _numCtx.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _numNgl.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _numParallel.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numPort.TextChanged += (_, _) => _presenter.OnParamEdited();
+        _numCtx.TextChanged += (_, _) => _presenter.OnParamEdited();
+        _numNgl.TextChanged += (_, _) => _presenter.OnParamEdited();
+        _numParallel.TextChanged += (_, _) => _presenter.OnParamEdited();
         _chkNoKv.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _numThreads.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numThreads.TextChanged += (_, _) => _presenter.OnParamEdited();
         _txtExtra.TextChanged += (_, _) => _presenter.OnParamEdited();
         _txtPcoreMask.TextChanged += (_, _) => _presenter.OnParamEdited();
         _txtKvCachePath.TextChanged += (_, _) => _presenter.OnParamEdited();
         _chkForceStream.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         _chkTokenGuard.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _numReservedTokens.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _numCacheRam.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numReservedTokens.TextChanged += (_, _) => _presenter.OnParamEdited();
+        _numCacheRam.TextChanged += (_, _) => _presenter.OnParamEdited();
         _chkNoCacheIdleSlots.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         _chkContinuation.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _numMaxContinuations.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _numContTimeout.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numMaxContinuations.TextChanged += (_, _) => _presenter.OnParamEdited();
+        _numContTimeout.TextChanged += (_, _) => _presenter.OnParamEdited();
         _chkCrashRecover.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _numMaxRestarts.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numMaxRestarts.TextChanged += (_, _) => _presenter.OnParamEdited();
         _txtLoadMode.TextChanged += (_, _) => _presenter.OnParamEdited();
-        _numUbatch.ValueChanged += (_, _) => _presenter.OnParamEdited();
-        _numBatch.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numUbatch.TextChanged += (_, _) => _presenter.OnParamEdited();
+        _numBatch.TextChanged += (_, _) => _presenter.OnParamEdited();
         _txtCacheTypeKv.TextChanged += (_, _) => _presenter.OnParamEdited();
         _chkFlashAttn.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         _txtSpecType.TextChanged += (_, _) => _presenter.OnParamEdited();
-        _numSpecDraftNMax.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numSpecDraftNMax.TextChanged += (_, _) => _presenter.OnParamEdited();
         _chkRequestDump.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         _cmbLogQueuePolicy.SelectedIndexChanged += (_, _) => _presenter.OnParamEdited();
-        _numBatchThreads.ValueChanged += (_, _) => _presenter.OnParamEdited();
+        _numBatchThreads.TextChanged += (_, _) => _presenter.OnParamEdited();
         foreach (var c in _autoPreChecks) c.CheckedChanged += (_, _) => _presenter.OnParamEdited();
         foreach (var c in _snapChecks) c.CheckedChanged += (_, _) => _presenter.OnParamEdited();
-        _numIdleMin.ValueChanged += (_, _) => _presenter.OnIdleEdited();
+        _numIdleMin.TextChanged += (_, _) => _presenter.OnIdleEdited();
         _chkAuto.CheckedChanged += (_, _) => _presenter.OnAutoModeEdited();
 
         FormClosing += OnFormClosing;
@@ -215,7 +215,7 @@ public partial class MainForm : Form
     internal void SetClearCacheEnabled(bool enabled) => _btnClearCache.Enabled = enabled;
 
     /// <summary>智能空闲分钟数（OnIdleEdited 即时更新调度器用）。</summary>
-    internal int IdleMinutesValue => (int)_numIdleMin.Value;
+    internal int IdleMinutesValue => ReadInt(_numIdleMin, NUM_IDLE_MIN, NUM_IDLE_MAX, _config.IdleMinutes);
 
     /// <summary>参数 CheckBox 集合（ApplyPhase 禁用时刷新为灰；启用时恢复黑）。</summary>
     private CheckBox[] ParamCheckBoxes => new[]

@@ -27,7 +27,7 @@ public sealed class StatusPanelView : UserControl
 
     // 外部注入（v2.17.2 并入 BuildPage 参数，消除 BindUi 两步模式）：操作按钮 + 参数控件数组 + 端口 + 参数 CheckBox
     private Control[] _paramControls = null!;
-    private NumericUpDown _numPort = null!;
+    private TextBox _numPort = null!;
     private Button _btnStart = null!, _btnStop = null!, _btnThinkOn = null!, _btnTurbo = null!;
     private Button _btnClearLog = null!, _btnClearCache = null!, _btnExportCfg = null!, _btnImportCfg = null!;
     private CheckBox[] _paramCheckBoxes = null!;
@@ -42,7 +42,7 @@ public sealed class StatusPanelView : UserControl
 
     /// <summary>构建右侧状态面板（30% 列）：八卡片纵向等高堆叠 + 一次性注入外部控件（操作按钮/参数控件/端口/参数CheckBox），
     /// 消除先构造后注入的 BindUi 两步模式（v2.17.2）：ApplyPhase 据此启停，注入点唯一、由调用方签名强制。</summary>
-    public Control BuildPage(Control[] paramControls, NumericUpDown numPort,
+    public Control BuildPage(Control[] paramControls, TextBox numPort,
         Button start, Button stop, Button thinkOn, Button turbo,
         Button clearLog, Button clearCache, Button exportCfg, Button importCfg,
         CheckBox[] paramCheckBoxes)
