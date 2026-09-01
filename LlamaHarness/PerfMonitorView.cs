@@ -29,6 +29,7 @@ public sealed class PerfMonitorView : UserControl
     private Label _lblReqTotal = null!, _lblReqFail = null!, _lblAvgTotal = null!, _lblMaxTotal = null!, _lblAvgBackend = null!, _lblFailRate = null!;
     private Label _lblAlarms = null!;
     private Label _lblLogSummary = null!;
+    private TableLayoutPanel _layout = null!; // 布局引用（动态调整离线分析卡片高度）
     private Label _lblKvHit = null!, _lblKvFalse = null!, _lblEvict = null!, _lblPreempt = null!, _lblLogDrop = null!, _lblLogFlush = null!;
     private Label _lblPerfTimestamp = null!;
     private readonly Button[] _metricBtns = new Button[5];
@@ -179,7 +180,7 @@ public sealed class PerfMonitorView : UserControl
             Font = new Font("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
-            AutoSize = true,
+            AutoSize = false,
         };
         alarmCard.Controls.Add(_lblAlarms);
         layout.Controls.Add(alarmCard, 0, 5);
@@ -208,6 +209,8 @@ public sealed class PerfMonitorView : UserControl
 
         // 行7：perf.log 会话对比卡片（固定 220 高；按钮 Dock=Bottom 需固定卡片底）
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));   // row7: 会话对比标题行
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 190)); // row8: 会话对比卡片（初始；刷新后按内容动态调整）
         var logTitle = UiTheme.MakeCardTitle("perf.log 会话对比（离线分析）");
         layout.Controls.Add(logTitle, 0, 7);
         var logCard = MakePerfCard();
@@ -219,7 +222,7 @@ public sealed class PerfMonitorView : UserControl
             Font = new Font("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
-            AutoSize = true,
+            AutoSize = false,
         };
         var btnRefreshLog = new Button
         {
@@ -238,6 +241,7 @@ public sealed class PerfMonitorView : UserControl
         logCard.Controls.Add(btnRefreshLog);
         layout.Controls.Add(logCard, 0, 8);
 
+        _layout = layout;
         Controls.Add(layout);
 
         // 订阅请求时延告警（事件驱动）
@@ -418,10 +422,37 @@ public sealed class PerfMonitorView : UserControl
                 }
             }
             _lblLogSummary.Text = sb.ToString().TrimEnd();
+            AutoSizeLogCard();
         }
         catch (Exception ex)
         {
             _lblLogSummary.Text = $"perf.log 读取失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>按渲染文本高度动态调整离线分析卡片行高（row8），并重绘；控件未就绪时回退保持当前高度。</summary>
+    private void AutoSizeLogCard()
+    {
+        if (_layout == null || _layout.RowStyles.Count <= 8) return;
+        try
+        {
+            int width = Math.Max(200, _lblLogSummary.ClientSize.Width);
+            int textH;
+            using (var g = _lblLogSummary.CreateGraphics())
+            {
+                textH = TextRenderer.MeasureText(g, _lblLogSummary.Text, _lblLogSummary.Font,
+                    new Size(width, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
+            }
+            // 文本 + 底部按钮 30 + 卡片 Padding 16 + 安全余量 10
+            int h = Math.Clamp(textH + 56, 110, 520);
+            var rs = _layout.RowStyles[8];
+            if (rs.SizeType == SizeType.Absolute && Math.Abs(rs.Height - h) < 4) return;
+            rs.Height = h;
+            _layout.PerformLayout();
+        }
+        catch
+        {
+            // 控件未就绪（Handle 未创建）：保持当前高度，下次刷新再调
         }
     }
 
