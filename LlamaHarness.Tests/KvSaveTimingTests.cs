@@ -86,6 +86,19 @@ public class KvSaveTimingTests
     }
 
     [Fact]
+    public void IsAutoSnapshotKey_UnknownPrefix_RespectsUnknownKvSnapshotSwitch()
+    {
+        // v2.23.8：unknown_ 前缀在 UnknownAppKvSnapshot 开启时视为自动快照（未知应用独立 KV 兜底）
+        var on = new SmartScheduler(new AppConfig { UnknownAppKvSnapshot = true });
+        Assert.True(on.IsAutoSnapshotKey("unknown_3f9a2c17e8b4"));
+        var off = new SmartScheduler(new AppConfig { UnknownAppKvSnapshot = false });
+        Assert.False(off.IsAutoSnapshotKey("unknown_3f9a2c17e8b4"));
+        // 非 unknown 前缀不受影响（默认 auto_snapshot_keys=trae_global）
+        Assert.True(on.IsAutoSnapshotKey("trae_global"));
+        Assert.False(on.IsAutoSnapshotKey("webui_foo"));
+    }
+
+    [Fact]
     public void SnapshotAndPreemptive_Decoupled()
     {
         // 快照 key 不在强占列表：有快照持久化，但无槽位冻结

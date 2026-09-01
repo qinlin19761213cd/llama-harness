@@ -28,6 +28,7 @@ public partial class MainForm
         _txtSpecType.Text = cfg.SpecType;
         _numSpecDraftNMax.Value = Math.Clamp(cfg.SpecDraftNMax, (int)_numSpecDraftNMax.Minimum, (int)_numSpecDraftNMax.Maximum);
         _chkRequestDump.Checked = cfg.RequestDumpEnabled;
+        _chkUnknownAutoBind.Checked = cfg.UnknownAppAutoBind; // v2.23.8 未知应用自动兜底
         _cmbLogQueuePolicy.SelectedIndex = cfg.LogQueueFullPolicy == QueueFullPolicy.DropOldest ? 1 : 0;
         _numBatchThreads.Value = Math.Clamp(cfg.BatchThreads, (int)_numBatchThreads.Minimum, (int)_numBatchThreads.Maximum);
         _txtExtra.Text = cfg.ExtraArgs;
@@ -76,6 +77,7 @@ public partial class MainForm
         _config.SpecType = _txtSpecType.Text.Trim();
         _config.SpecDraftNMax = (int)_numSpecDraftNMax.Value;
         _config.RequestDumpEnabled = _chkRequestDump.Checked;
+        _config.UnknownAppAutoBind = _chkUnknownAutoBind.Checked;
         var logPolicy = _cmbLogQueuePolicy.SelectedIndex == 1 ? QueueFullPolicy.DropOldest : QueueFullPolicy.DropNewest;
         _config.LogQueueFullPolicy = logPolicy;
         LogFile.Configure(logPolicy); // 运行时立即生效

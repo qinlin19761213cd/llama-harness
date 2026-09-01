@@ -75,6 +75,15 @@ public class AppConfig
     /// <summary>自动快照 key（仅快照持久化，不锁槽）：逗号分隔前缀。key 匹配任一前缀 → 首请求存档 + Warming eager restore；不参与槽位强占/驱逐拒绝（与 AutoPreemptiveApps 解耦）。默认 trae_global。</summary>
     public string AutoSnapshotKeys { get; set; } = "trae_global";
 
+    // —— v2.23.8 未知应用自动兜底识别 ——
+    /// <summary>未知应用自动绑定（UA 稳定哈希生成独立 key unknown_{hash}，走正常槽位亲和 + KV 快照）。
+    /// 新应用接入无需手动配规则即可获得独立缓存；正式 affinity_rules 永远优先。默认开。</summary>
+    public bool UnknownAppAutoBind { get; set; } = true;
+    /// <summary>未知应用 key 是否启用 KV 快照持久化（unknown_ 前缀视为自动快照）。默认开；关闭则 unknown 键仅占槽位不存快照。</summary>
+    public bool UnknownAppKvSnapshot { get; set; } = true;
+    /// <summary>未知应用 key 数量上限（防 KV 磁盘膨胀：每个快照 ~160MB）。达到上限后新未知应用走随机槽，不建绑定不存 KV。默认 16。</summary>
+    public int UnknownAppMaxKeys { get; set; } = 16;
+
     /// <summary>指纹识别规则（v2.16）：有序按 Priority 升序匹配，第一条命中即返回。新增业务 = 配置追加一条规则，零代码改动。默认 4 条与重构前 GetAffinityKey 逐字等价。</summary>
     public List<AffinityRule> AffinityRules { get; set; } = DefaultAffinityRules();
     /// <summary>请求体 dump 开关（应用识别分析用）：每个 POST 的原始 body + headers 落盘 request_dump.log。默认关闭——防 prompt 隐私落盘与无谓 IO（审计 O-18）。</summary>
@@ -156,6 +165,7 @@ public class AppConfig
         if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
         if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
         if (cfg.PerfSeriesSeconds is < 60 or > 86400) cfg.PerfSeriesSeconds = 3600; // 性能窗口 1 分钟~24 小时
+        if (cfg.UnknownAppMaxKeys is < 1 or > 256) cfg.UnknownAppMaxKeys = 16; // 未知应用 key 上限 1~256（防 KV 磁盘膨胀）
     }
 
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>

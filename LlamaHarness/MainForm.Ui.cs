@@ -43,6 +43,7 @@ public partial class MainForm : Form
     private readonly TextBox _txtSpecType = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly NumericUpDown _numSpecDraftNMax = new() { Minimum = 0, Maximum = 8, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
     private readonly CheckBox _chkRequestDump = new() { Text = "request-dump（dump 所有请求到 logs/request_dump.log）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
+    private readonly CheckBox _chkUnknownAutoBind = new() { Text = "未知应用自动识别（独立 KV 快照）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) }; // v2.23.8 未知应用自动兜底
     private readonly ComboBox _cmbLogQueuePolicy = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, ForeColor = Color.White };
     private readonly NumericUpDown _numBatchThreads = new() { Minimum = 0, Maximum = 512, Dock = DockStyle.Fill, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
     // §4.2 自动强占（冻结防驱逐）/ 自动快照恢复（不锁槽）：checkbox 由 affinity_rules 动态生成（规则表即来源，新增业务仅配置）
@@ -121,6 +122,7 @@ public partial class MainForm : Form
             _chkTokenGuard, _numReservedTokens,
             _chkContinuation, _numMaxContinuations, _numContTimeout,
             _chkCrashRecover, _numMaxRestarts,
+            _chkUnknownAutoBind,
         };
         _paramControls = _paramControls.Concat(_autoPreChecks).Concat(_snapChecks)
             .Concat(new Control[] { _btnExportCfg, _btnImportCfg }) // 运行中禁止导入/导出，避免改参冲突
@@ -442,7 +444,7 @@ public partial class MainForm : Form
         // 文字框白字（禁用时也保持白字，清晰）+ CheckBox 勾改黑
         foreach (var c in new[] { _txtExe, _txtModel, _txtExtra, _txtPcoreMask, _txtKvCachePath, _txtLoadMode, _txtCacheTypeKv, _txtSpecType })
             if (c is TextBox tb) tb.ForeColor = Color.White;
-        foreach (var c in new[] { _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover, _chkFlashAttn, _chkRequestDump, _chkNoCacheIdleSlots })
+        foreach (var c in new[] { _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover, _chkFlashAttn, _chkRequestDump, _chkNoCacheIdleSlots, _chkUnknownAutoBind })
             UiTheme.ApplyBlackCheck(c);
         foreach (var c in _autoPreChecks) UiTheme.ApplyBlackCheck(c);
         foreach (var c in _snapChecks) UiTheme.ApplyBlackCheck(c);
@@ -578,6 +580,7 @@ public partial class MainForm : Form
         AddRow(g, "续接超时:", _numContTimeout);
         AddRow(g, "崩溃恢复:", _chkCrashRecover);
         AddRow(g, "最大重启:", _numMaxRestarts);
+        AddRow(g, "未知应用:", _chkUnknownAutoBind); // v2.23.8：未匹配规则的应用自动独立 key + KV 快照
         // 模式行：标签 + CheckBox 同行（AutoSize 让 CheckBox 紧跟标签，不再撑满整行）
         var chkAutoRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         chkAutoRow.Controls.Add(_chkAuto);
@@ -618,6 +621,7 @@ public partial class MainForm : Form
         _tooltip.SetToolTip(_numNgl, "GPU 层数（--n-gpu-layers）；999 = 全量 offload 显存，0 = 纯 CPU。");
         _tooltip.SetToolTip(_numParallel, "并行槽位数（--parallel）；每槽独立上下文，多 agent 并发按此路由。");
         _tooltip.SetToolTip(_chkNoKv, "--no-kv-unified：不启用统一 KV 缓存（unified KV 与分离 KV 场景）。");
+        _tooltip.SetToolTip(_chkUnknownAutoBind, "未匹配任何指纹规则的应用（如新接入的 Agent）自动按 UA 哈希分配独立槽位 key（unknown_xxx）并启用 KV 快照持久化——无需手动配规则即可获得独立缓存与槽位亲和，同应用 UA 稳定可跨请求复用；正式 affinity_rules 永远优先。上限 16 个，防 KV 磁盘膨胀。");
         _tooltip.SetToolTip(_numThreads, "CPU 线程数（--threads）；默认 = 逻辑核心数。");
         _tooltip.SetToolTip(_numIdleMin, "智能模式：空闲 N 分钟后自动休眠释放显存，请求自动唤醒。");
         _tooltip.SetToolTip(_txtPcoreMask, "P 核 CPU 亲和掩码（--p-core-mask，十六进制）；留空 = 不限制。");

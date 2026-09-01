@@ -48,11 +48,21 @@ public sealed class SlotAffinity
     /// <summary>v2.22 可观测：性能事件通道（槽选择耗时 / 驱逐 / 强占）。由宿主（SmartScheduler）注入；null = 不采集。</summary>
     public PerfEventTracker? PerfEvents { get; set; }
 
-    public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null)
+    /// <summary>v2.23.8 未知应用自动兜底事件（宿主打 [AUTO-BIND] 日志用）：参数 (key, UA 摘要)。
+    /// key != null = 新 unknown 键已自动绑定；key == null = 已达 unknown 上限，拒绝新建绑定（走随机槽）。</summary>
+    public Action<string?, string>? UnknownBindEvent { get; set; }
+
+    private readonly bool _unknownAutoBind;
+    private readonly int _maxUnknownKeys;
+
+    public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null,
+        bool unknownAutoBind = false, int maxUnknownKeys = 16)
     {
         _slotCount = Math.Max(1, slotCount);
         _maxWaitSeconds = Math.Max(1, maxWaitSeconds);
         _rules = rules ?? AppConfig.DefaultAffinityRules();
+        _unknownAutoBind = unknownAutoBind;
+        _maxUnknownKeys = Math.Max(1, maxUnknownKeys);
         Load();
         EnforcePreemptiveCap();
     }
@@ -68,7 +78,34 @@ public sealed class SlotAffinity
 
     /// <summary>指纹识别：按配置规则（affinity_rules）识别业务返回亲和 Key；null = 未知请求（不建立绑定）。
     /// 规则有序按 Priority 匹配，新增业务 = 配置追加规则，零代码改动（v2.16 替代原硬编码 4 组 if）。</summary>
-    public string? GetAffinityKey(NameValueCollection h) => AffinityRuleMatcher.Match(h, _rules);
+    public string? GetAffinityKey(NameValueCollection h)
+    {
+        var key = AffinityRuleMatcher.Match(h, _rules);
+        if (!string.IsNullOrEmpty(key)) return key; // 正式规则命中（永远优先于未知兜底）
+
+        // v2.23.8 未知应用自动兜底：正式规则全不命中 → UA 稳定哈希生成 unknown_{hash}，走正常绑定/KV
+        if (!_unknownAutoBind) return null;
+        int unknownCount;
+        lock (_gate) unknownCount = _bindings.Keys.Count(k => k.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase));
+        var ua = h["User-Agent"] ?? "";
+        if (unknownCount >= _maxUnknownKeys)
+        {
+            if (!string.IsNullOrEmpty(ua)) UnknownBindEvent?.Invoke(null, Truncate(ua, 80)); // 达上限告警
+            return null;
+        }
+        var uk = AffinityRuleMatcher.TryAutoBindUnknown(h, _maxUnknownKeys, unknownCount);
+        if (uk != null && !string.IsNullOrEmpty(ua)) UnknownBindEvent?.Invoke(uk, Truncate(ua, 80));
+        return uk;
+    }
+
+    /// <summary>截断长 UA 供日志展示（AUTO-BIND 埋点防日志爆炸）。</summary>
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
+
+    /// <summary>当前已绑定的未知应用 key 数（unknown_ 前缀，v2.23.8 可观测/上限日志用）。</summary>
+    public int UnknownKeyCount()
+    {
+        lock (_gate) return _bindings.Keys.Count(k => k.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>按配置规则（affinity_rules）派生应用显示名。</summary>
     public string AppNameOf(string key) => AffinityRuleMatcher.AppNameOf(key, _rules);

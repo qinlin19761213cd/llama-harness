@@ -163,8 +163,13 @@ public partial class SmartScheduler
     private void InitRuntimeAssemblies(int srvPort)
     {
         // 槽位亲和：始终启用（单槽/多槽均激活），指纹绑定 + n_slots 路由
-        _affinity = new SlotAffinity(_cfg.Parallel, rules: _cfg.AffinityRules);
+        // v2.23.8：unknownAutoBind/maxUnknownKeys —— 未知应用自动兜底（正式规则未命中时 UA 哈希建独立 key）
+        _affinity = new SlotAffinity(_cfg.Parallel, rules: _cfg.AffinityRules,
+            unknownAutoBind: _cfg.UnknownAppAutoBind, maxUnknownKeys: _cfg.UnknownAppMaxKeys);
         _affinity.PerfEvents = SchedEvents; // v2.22 可观测：槽选择耗时/驱逐/强占事件流
+        _affinity.UnknownBindEvent = (key, ua) => Log?.Invoke(key != null
+            ? $"[AUTO-BIND] 未知应用自动绑定：{key}（UA={ua}，现有 unknown 键 {_affinity.UnknownKeyCount()}/{_cfg.UnknownAppMaxKeys}）。如需固化规则请配置 affinity_rules。"
+            : $"[AUTO-BIND] unknown 键已达上限 {_cfg.UnknownAppMaxKeys}，新未知应用走随机槽（UA={ua}）。如需独立缓存请手动配置 affinity_rules。");
         // 启动时强制：裁剪超额强占到 ≤ slotCount-1（保"至少 1 槽给非强占新任务"不变量）
         var evictedPreemptive = _affinity.EnforcePreemptiveCap();
         if (evictedPreemptive.Count > 0)

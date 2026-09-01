@@ -301,9 +301,11 @@ public partial class SmartScheduler
             .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
     }
 
-    /// <summary>判定亲和 key 是否匹配任一自动快照前缀（1.1 首请求存档 / 3.2 Warming eager restore 条件；不参与强占/驱逐拒绝，public 供测试）。</summary>
+    /// <summary>判定亲和 key 是否匹配任一自动快照前缀（1.1 首请求存档 / 3.2 Warming eager restore 条件；不参与强占/驱逐拒绝，public 供测试）。
+    /// v2.23.8：unknown_ 前缀（未知应用自动兜底）在 UnknownAppKvSnapshot 开启时视为自动快照——新应用无需配规则即可独立 KV 持久化。</summary>
     public bool IsAutoSnapshotKey(string key)
     {
+        if (_cfg.UnknownAppKvSnapshot && key.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)) return true;
         return ParseAutoSnapshotPrefixes().Any(p => key.StartsWith(p, StringComparison.OrdinalIgnoreCase));
     }
 
