@@ -141,13 +141,14 @@ public sealed class MonitorPanelView : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = UiTheme.C_Card,
-            ColumnCount = 2,
+            ColumnCount = 3,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(4),
         };
+        _tblPropsBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f));
         _tblPropsBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30f));
-        _tblPropsBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70f));
+        _tblPropsBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
         _btnRawProps = UiTheme.MakeRawButton();
         _rawPropsBox = UiTheme.MakeRawTextBox();
         _propsCard.Controls.Add(_tblPropsBody);
@@ -271,7 +272,47 @@ public sealed class MonitorPanelView : UserControl
         _rawSlotsBox.Text = snap.RawSlotsJson;
     }
 
-    /// <summary>更新 /props 卡片：模型全局配置（两列表格：左标签+右值）+ Raw 折叠。</summary>
+    /// <summary>llama.cpp /props 模型参数中文说明（v2.25）。key 归一化：去 _ / - / 空格 转小写后匹配，未知参数返回空。</summary>
+    private static readonly Dictionary<string, string> PropsDesc = new()
+    {
+        ["seed"] = "随机种子：固定后同输入可复现；4294967295 = 随机",
+        ["temperature"] = "采样温度：越高越随机，越低越确定；0 = 贪心",
+        ["dynatemprange"] = "动态温度浮动范围（±range 随机变化）",
+        ["dynatempexponent"] = "动态温度指数：调节温度随生成进度的曲线",
+        ["topk"] = "Top-K：仅从概率最高的 K 个 token 中采样",
+        ["topp"] = "Top-P：累积概率达到 P 的 token 参与采样",
+        ["minp"] = "Min-P：概率低于 最高概率×P 的 token 被排除",
+        ["topnsigma"] = "Top-N-Sigma：按正态分布截断采样；-1 = 禁用",
+        ["xtcprobability"] = "XTC 去重采样启用概率；0 = 关闭",
+        ["xtcthreshold"] = "XTC 去重阈值（高于该概率的 token 被排除）",
+        ["typicalp"] = "典型采样；1.0 = 关闭",
+        ["repeatlastn"] = "重复惩罚作用范围：最近 N 个 token",
+        ["repeatpenalty"] = "重复惩罚系数：>1 抑制重复，越大越强",
+        ["presencepenalty"] = "存在惩罚：对已出现过的 token 整体施加",
+        ["frequencypenalty"] = "频率惩罚：对高频出现的 token 施加更强惩罚",
+        ["drymultiplier"] = "DRY 无感重复抑制系数",
+        ["drybase"] = "DRY 抑制幂底（控制抑制强度）",
+        ["dryallowedlength"] = "DRY 允许的最大连续重复长度",
+        ["drypenalylastn"] = "DRY 检查范围：最近 N 个 token",
+        ["mirostat"] = "Mirostat 采样模式：0 关 / 1 / 2",
+        ["mirostattau"] = "Mirostat 目标困惑度（越小越保守）",
+        ["mirostateta"] = "Mirostat 学习率（调节适应速度）",
+        ["adaptivetarget"] = "自适应惩罚目标 token 数；-1 = 禁用",
+        ["adaptivedecay"] = "自适应惩罚衰减系数（<1 逐渐放松）",
+        ["maxtokens"] = "最大生成 token 数；-1 = 无限制",
+        ["npredict"] = "预测（生成）token 数；-1 = 无限制",
+        ["nkeep"] = "保留上下文前 N 个 token（不参与裁剪）",
+        ["ndiscard"] = "丢弃上下文前 N 个 token",
+        ["ignoreeos"] = "忽略结束符：生成到达到上限，不提前停止",
+    };
+
+    /// <summary>查参数中文说明：归一化（去 _ / - / 空格 转小写）后查字典，未知返回空串。</summary>
+    internal static string PropDesc(string fieldName)
+        => PropsDesc.TryGetValue(
+            fieldName.Replace("_", "").Replace("-", "").Replace(" ", "").ToLowerInvariant(),
+            out var desc) ? desc : "";
+
+    /// <summary>更新 /props 卡片：模型全局配置（三列表格：左标签+中值+右中文说明）+ Raw 折叠。</summary>
     private void UpdatePropsCard(LlamaCppMonitorSnapshot? snap)
     {
         if (snap == null || string.IsNullOrEmpty(snap.RawPropsJson))
@@ -328,6 +369,18 @@ public sealed class MonitorPanelView : UserControl
             _tblPropsBody.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _tblPropsBody.Controls.Add(lblKey, 0, rowIdx);
             _tblPropsBody.Controls.Add(lblVal, 1, rowIdx);
+            var lblDesc = new Label
+            {
+                Text = PropDesc(fieldName),
+                Dock = DockStyle.Fill,
+                ForeColor = Color.FromArgb(0x8A, 0x8A, 0x8A),
+                Font = new Font("Microsoft YaHei UI", 9F),
+                Padding = new Padding(4, 6, 8, 6),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoSize = true,
+                MaximumSize = new Size(0, 0),
+            };
+            _tblPropsBody.Controls.Add(lblDesc, 2, rowIdx);
             rowIdx++;
         }
         _btnRawProps.Visible = true;
