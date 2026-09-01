@@ -219,6 +219,13 @@ public sealed partial class SmartScheduler : IDisposable
             if (r != null)
             {
                 EmitSlot($"[KV-RESTORE-JUDGE] key={r.Key} hit={(r.Hit ? 1 : 0)} reason={r.Reason} prompt_eval={r.PromptEvalTokens} saved_n={r.SavedN} wrapper_hit={(r.WrapperHit ? 1 : 0)} false_miss={(r.FalseMiss ? 1 : 0)} false_hit={(r.FalseHit ? 1 : 0)}");
+                if (r.DriftAlert)
+                {
+                    // v2.23.10 前缀漂移告警：该 key 存在 KV 快照却连续全量 prefill → 增量复用失效（含「警告」字样自动入 warn_error.log）
+                    var driftMsg = $"[KV-DRIFT] 前缀漂移告警：{r.Key} 连续 {RestoreStats.DriftChainThreshold} 次存在快照仍全量 prefill（saved_n={r.SavedN}），KV 增量复用失效——检查系统提示词/tools 组装稳定性或 TokenGuard 裁剪是否导致前缀漂移";
+                    Log?.Invoke("警告：" + driftMsg);
+                    EmitSlot(driftMsg);
+                }
                 if (r.Alert != RestoreStats.AlertLevel.None)
                 {
                     var msg = $"Restore 命中率告警：总命中率 {(r.HitRate * 100):F1}%（{(r.Alert == RestoreStats.AlertLevel.Red ? "红色" : "黄色")}）";

@@ -21,7 +21,7 @@ public sealed class PerfSampler : IDisposable
 
     private readonly Func<int> _backendPortProvider;
     private readonly Func<int> _inflightProvider;
-    private readonly Func<(int Hits, int FalseMiss, int SavedN)>? _kvStatsProvider; // v2.22 KV 累积型快照源
+    private readonly Func<(int Hits, int FalseMiss, int SavedN, int FullPrefill)>? _kvStatsProvider; // v2.22 KV 累积型快照源（v2.23.10 增全量 prefill）
     private readonly Func<(int Evict, int Preempt)>? _schedStatsProvider;   // v2.22 调度累积型快照源
     private readonly Func<(long Dropped, double FlushAvgMs)>? _logStatsProvider; // v2.22 日志管道累积型快照源
     private readonly System.Threading.Timer _timer;
@@ -47,7 +47,7 @@ public sealed class PerfSampler : IDisposable
     /// <summary>最近一次采样点（UI 实时数字展示用；null = 尚未采样）。</summary>
     public PerfPoint? LastPoint { get; private set; }
 
-    public PerfSampler(Func<int> backendPortProvider, Func<int> inflightProvider, Func<(int Hits, int FalseMiss, int SavedN)>? kvStatsProvider = null, Func<(int Evict, int Preempt)>? schedStatsProvider = null, Func<(long Dropped, double FlushAvgMs)>? logStatsProvider = null)
+    public PerfSampler(Func<int> backendPortProvider, Func<int> inflightProvider, Func<(int Hits, int FalseMiss, int SavedN, int FullPrefill)>? kvStatsProvider = null, Func<(int Evict, int Preempt)>? schedStatsProvider = null, Func<(long Dropped, double FlushAvgMs)>? logStatsProvider = null)
     {
         _backendPortProvider = backendPortProvider;
         _inflightProvider = inflightProvider;
@@ -84,10 +84,10 @@ public sealed class PerfSampler : IDisposable
         try { inflight = _inflightProvider(); } catch { }
 
         // —— KV 累积型快照（v2.22）：命中 / false_miss / 最大 savedN——
-        int? kvHit = null, kvFalse = null, kvSaved = null;
+        int? kvHit = null, kvFalse = null, kvSaved = null, kvFull = null;
         if (_kvStatsProvider != null)
         {
-            try { var k = _kvStatsProvider(); kvHit = k.Hits; kvFalse = k.FalseMiss; kvSaved = k.SavedN; } catch { }
+            try { var k = _kvStatsProvider(); kvHit = k.Hits; kvFalse = k.FalseMiss; kvSaved = k.SavedN; kvFull = k.FullPrefill; } catch { }
         }
 
         // —— 调度累积型快照（v2.22）：驱逐 / 强占——
@@ -134,6 +134,7 @@ public sealed class PerfSampler : IDisposable
             KvHitDelta = kvHit,
             KvFalseMiss = kvFalse,
             SavedN = kvSaved,
+            KvFullPrefill = kvFull,
             EvictCount = evict,
             PreemptTrigger = preempt,
             LogDroppedLines = logDropped,

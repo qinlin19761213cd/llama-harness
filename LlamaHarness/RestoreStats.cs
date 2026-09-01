@@ -19,13 +19,19 @@ public sealed class RestoreStats
     /// <summary>告警最小样本数（防启动初期单次 miss 误报）。</summary>
     public const int MinSamplesForAlert = 5;
 
+    /// <summary>前缀漂移告警阈值：某 key 存在快照（savedN>0）却连续 N 次全量 prefill → 判定前缀漂移（系统提示词/tools 组装不稳定或 TokenGuard 裁剪变化，KV 增量复用失效）。v2.23.10。</summary>
+    public const int DriftChainThreshold = 3;
+
     private readonly object _gate = new();
     private readonly string _statsPath;
     private readonly Queue<Pending> _pending = new();
     private readonly Dictionary<string, KeyStats> _byKey = new(StringComparer.OrdinalIgnoreCase);
 
     private int _totalAttempts, _totalHits, _totalFalseMiss, _totalFalseHit;
+    private int _totalFullPrefill; // 全量 prefill 累计（kv_full_prefill 累积型指标源）
     private int _maxSavedN; // 会话最大 token 偏移（可观测 kv 累积型指标 saved_n 源）
+    private readonly HashSet<string> _driftAlertedKeys = new(StringComparer.OrdinalIgnoreCase); // 已告警漂移 key（链归零时移除，允许再次告警）
+    private int _driftAlertCount; // 前缀漂移告警累计次数（状态栏展示）
     private AlertLevel _lastAlert = AlertLevel.None;
     private DateTime _lastSaveAt = DateTime.MinValue;
     private bool _dirty;
@@ -45,7 +51,8 @@ public sealed class RestoreStats
     public sealed record JudgeResult(
         string Key, int Slot, bool Hit, string Reason,
         int PromptEvalTokens, int SavedN, bool WrapperHit,
-        bool FalseMiss, bool FalseHit, double HitRate, AlertLevel Alert);
+        bool FalseMiss, bool FalseHit, double HitRate, AlertLevel Alert,
+        bool DriftAlert);
 
     /// <summary>最近一次判定明细（UI「最近一次明细」数据源）。</summary>
     public sealed record LastJudge(string Key, bool Hit, string Reason, int PromptEvalTokens, int SavedN, bool WrapperHit, DateTime Time);
@@ -64,6 +71,8 @@ public sealed class RestoreStats
         public int Attempts, Hits, FalseMiss, FalseHit;
         public long PromptEvalSum;
         public int PromptEvalCount;
+        public int FullPrefillCount;  // 该 key 全量 prefill 累计次数
+        public int FullPrefillChain;  // 连续全量 prefill 链（漂移检测，savedN>0 才累计）
     }
 
     /// <summary>静态正则：prompt eval time = X ms / N tokens（与 LlamaStatsParser.PromptRe 同口径）。</summary>
@@ -125,6 +134,7 @@ public sealed class RestoreStats
 
         double rate;
         AlertLevel alertRaised;
+        bool driftRaised;
         lock (_gate)
         {
             _totalAttempts++;
@@ -142,15 +152,43 @@ public sealed class RestoreStats
             _lastJudge = new LastJudge(p.Key, hit, reason, tokens, p.SavedN, p.WrapperHit, DateTime.Now);
             _dirty = true;
 
+            // —— 前缀漂移检测（v2.23.10）：存在快照（savedN>0）仍全量 prefill = 前缀漂移候选；连续 DriftChainThreshold 次告警 ——
+            driftRaised = false;
+            if (hit)
+            {
+                ks.FullPrefillChain = 0; // 命中（增量）打断链；前缀恢复稳定
+                _driftAlertedKeys.Remove(p.Key);
+            }
+            else if (reason == "FullPrefill")
+            {
+                _totalFullPrefill++;
+                ks.FullPrefillCount++;
+                if (p.SavedN > 0)
+                {
+                    ks.FullPrefillChain++;
+                    if (ks.FullPrefillChain >= DriftChainThreshold && !_driftAlertedKeys.Contains(p.Key))
+                    {
+                        _driftAlertedKeys.Add(p.Key);
+                        _driftAlertCount++;
+                        driftRaised = true;
+                    }
+                }
+                else ks.FullPrefillChain = 0; // 无快照全量 = 正常首存档/无缓存，不算漂移
+            }
+            else
+            {
+                ks.FullPrefillChain = 0; // MidRange 中间态：打断链
+            }
+
             rate = (double)_totalHits / _totalAttempts;
             var level = _totalAttempts >= MinSamplesForAlert ? ComputeAlertLevel(rate) : AlertLevel.None;
             alertRaised = level != _lastAlert ? level : AlertLevel.None; // 状态迁移触发：同级别不重复告警
             _lastAlert = level;
-            LastJudgeResult = new JudgeResult(p.Key, p.Slot, hit, reason, tokens, p.SavedN, p.WrapperHit, falseMiss, falseHit, rate, alertRaised);
+            LastJudgeResult = new JudgeResult(p.Key, p.Slot, hit, reason, tokens, p.SavedN, p.WrapperHit, falseMiss, falseHit, rate, alertRaised, driftRaised);
         }
 
         TryAutoSave(); // 节流持久化（≥10s 一次）
-        return new JudgeResult(p.Key, p.Slot, hit, reason, tokens, p.SavedN, p.WrapperHit, falseMiss, falseHit, rate, alertRaised);
+        return new JudgeResult(p.Key, p.Slot, hit, reason, tokens, p.SavedN, p.WrapperHit, falseMiss, falseHit, rate, alertRaised, driftRaised);
     }
 
     /// <summary>UI/对账快照：总命中率、误报率、单 key 明细、最近一次判定。</summary>
@@ -176,10 +214,16 @@ public sealed class RestoreStats
         }
     }
 
-    /// <summary>轻量性能快照（可观测累积型指标源，v2.22）：命中数 / false_miss / 最大 savedN。开销远低于全量 Snapshot（无 ByKey 构建）。</summary>
-    public (int TotalHits, int TotalFalseMiss, int MaxSavedN) PerfSnapshot()
+    /// <summary>轻量性能快照（可观测累积型指标源，v2.22）：命中数 / false_miss / 最大 savedN / 全量 prefill 累计。开销远低于全量 Snapshot（无 ByKey 构建）。v2.23.10 增全量 prefill 计数。</summary>
+    public (int TotalHits, int TotalFalseMiss, int MaxSavedN, int TotalFullPrefill) PerfSnapshot()
     {
-        lock (_gate) return (_totalHits, _totalFalseMiss, _maxSavedN);
+        lock (_gate) return (_totalHits, _totalFalseMiss, _maxSavedN, _totalFullPrefill);
+    }
+
+    /// <summary>前缀漂移告警累计次数（v2.23.10，状态栏/UI 展示）。</summary>
+    public int DriftAlertCount
+    {
+        get { lock (_gate) return _driftAlertCount; }
     }
 
     /// <summary>持久化（原子写：临时文件 + rename）。休眠/退出时显式调用；无新数据时跳过。AH-13：锁内只判定+快照，磁盘 IO 锁外执行（不再阻塞统计更新）。</summary>
@@ -245,7 +289,7 @@ public sealed class RestoreStats
     {
         return new
         {
-            total = new { attempts = _totalAttempts, hits = _totalHits, false_miss = _totalFalseMiss, false_hit = _totalFalseHit },
+            total = new { attempts = _totalAttempts, hits = _totalHits, false_miss = _totalFalseMiss, false_hit = _totalFalseHit, full_prefill = _totalFullPrefill, drift_alerts = _driftAlertCount },
             by_key = _byKey.Select(kv => new
             {
                 key = kv.Key,
@@ -253,7 +297,9 @@ public sealed class RestoreStats
                 hits = kv.Value.Hits,
                 false_miss = kv.Value.FalseMiss,
                 false_hit = kv.Value.FalseHit,
-                avg_prompt_eval = kv.Value.PromptEvalCount > 0 ? Math.Round((double)kv.Value.PromptEvalSum / kv.Value.PromptEvalCount, 1) : 0.0
+                avg_prompt_eval = kv.Value.PromptEvalCount > 0 ? Math.Round((double)kv.Value.PromptEvalSum / kv.Value.PromptEvalCount, 1) : 0.0,
+                full_prefill = kv.Value.FullPrefillCount,
+                full_prefill_chain = kv.Value.FullPrefillChain
             }).ToList(),
             last_judge = _lastJudge == null ? null : new
             {
@@ -284,6 +330,8 @@ public sealed class RestoreStats
                     if (t.TryGetProperty("hits", out var h)) _totalHits = h.GetInt32();
                     if (t.TryGetProperty("false_miss", out var fm)) _totalFalseMiss = fm.GetInt32();
                     if (t.TryGetProperty("false_hit", out var fh)) _totalFalseHit = fh.GetInt32();
+                    if (t.TryGetProperty("full_prefill", out var fp)) _totalFullPrefill = fp.GetInt32();
+                    if (t.TryGetProperty("drift_alerts", out var da)) _driftAlertCount = da.GetInt32();
                 }
                 if (root.TryGetProperty("by_key", out var bk) && bk.ValueKind == JsonValueKind.Array)
                 {
@@ -296,6 +344,8 @@ public sealed class RestoreStats
                         if (e.TryGetProperty("hits", out var h)) ks.Hits = h.GetInt32();
                         if (e.TryGetProperty("false_miss", out var fm)) ks.FalseMiss = fm.GetInt32();
                         if (e.TryGetProperty("false_hit", out var fh)) ks.FalseHit = fh.GetInt32();
+                        if (e.TryGetProperty("full_prefill", out var fpc)) ks.FullPrefillCount = fpc.GetInt32();
+                        if (e.TryGetProperty("full_prefill_chain", out var fch)) ks.FullPrefillChain = fch.GetInt32();
                         _byKey[keyName] = ks;
                     }
                 }

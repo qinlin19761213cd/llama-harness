@@ -19,6 +19,8 @@ public static class MetricKeys
     public const string KvSaveMs = "kv_save_ms";
     /// <summary>该会话最大 token 偏移量。</summary>
     public const string SavedN = "saved_n";
+    /// <summary>全量 prefill 累计次数（前缀漂移观测，v2.23.10）。</summary>
+    public const string KvFullPrefill = "kv_full_prefill";
 
     // ── ② 调度器指标（全局 + 槽维度） ──
     /// <summary>槽路由选择总耗时（ms，GetSlot 从进入排队到分配完成）。</summary>
@@ -70,7 +72,7 @@ public static class MetricKeys
     /// <summary>全部注册表键（供唯一性校验测试与遍历使用，不含兼容别名）。</summary>
     public static readonly IReadOnlyList<string> All = new[]
     {
-        KvHitDelta, KvFalseMiss, KvRestoreMs, KvSaveMs, SavedN,
+        KvHitDelta, KvFalseMiss, KvRestoreMs, KvSaveMs, SavedN, KvFullPrefill,
         SlotSelectMs, EvictCount, WakeupTotalMs, PreemptTrigger,
         PromptEvalTps, GenTps, DraftAcceptRate,
         LogDroppedLines, LogFlushCostMs,

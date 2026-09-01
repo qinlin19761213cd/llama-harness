@@ -39,7 +39,7 @@ public partial class MainForm : Form
         _slot = new SlotPanelView(_scheduler, AppendLog, _status.SetSlotSummary, () => IsHandleCreated, InvokeOnUi);
         _monitor = new MonitorPanelView(_config, _status, () => _scheduler.BackendPort, () => IsDisposed, AppendLog); // AH-1：监控采集用运行时后端端口
         _perfSampler = new PerfSampler(() => _scheduler.BackendPort, () => _scheduler.InflightCount,
-            () => { var r = _scheduler.GetRestoreStats(); return r == null ? (0, 0, 0) : r.PerfSnapshot(); },
+            () => { var r = _scheduler.GetRestoreStats(); return r == null ? (0, 0, 0, 0) : r.PerfSnapshot(); },
             () => _scheduler.SlotPerfSnapshot(),
             () => LogFile.PerfSnapshot()); // v2.22 日志管道累积型快照 // v2.21 性能采样（双节奏 1s/5s，端口门控 cpp）
         _perfSampler.Sampled += OnPerfSampled; // 采样点 → perf.log（system 1s + cpp 5s）

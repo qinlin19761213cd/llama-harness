@@ -304,7 +304,11 @@ public sealed class StatusPanelView : UserControl
         string last = s.Last != null
             ? $"\n最近: {s.Last.Key} {(s.Last.Hit ? "HIT" : "MISS")} Δ{s.Last.PromptEvalTokens}tok (saved {s.Last.SavedN})"
             : "";
-        _lblRestoreHit.Text = $"命中率: {pct:F1}% ({s.TotalHits}/{s.TotalAttempts}) | 误报: {s.FalseRate * 100:F1}%{last}";
+        // v2.23.10 前缀漂移告警：出现即红色提醒（KV 增量复用失效，检查前缀稳定性）
+        int drift = stats.DriftAlertCount;
+        string driftText = drift > 0 ? $" | ⚠前缀漂移×{drift}" : "";
+        if (drift > 0) _lblRestoreHit.ForeColor = Color.FromArgb(0xF5, 0x3F, 0x3F);
+        _lblRestoreHit.Text = $"命中率: {pct:F1}% ({s.TotalHits}/{s.TotalAttempts}) | 误报: {s.FalseRate * 100:F1}%{driftText}{last}";
     }
 
     /// <summary>系统资源摘要（CPU/内存）→ 右侧面板。</summary>

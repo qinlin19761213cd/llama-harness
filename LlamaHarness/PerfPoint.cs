@@ -45,6 +45,8 @@ public readonly struct PerfPoint
     public int? KvFalseMiss { get; init; }
     /// <summary>该会话最大 token 偏移量（KV 快照 token 数）。</summary>
     public int? SavedN { get; init; }
+    /// <summary>全量 prefill 累计次数（前缀漂移观测源，v2.23.10；增量 = 相邻采样点差）。</summary>
+    public int? KvFullPrefill { get; init; }
 
     // —— 调度累积型（SlotAffinity 会话计数快照，1s；增量 = 相邻采样点差）——
     /// <summary>驱逐事件累计次数。</summary>
@@ -59,7 +61,7 @@ public readonly struct PerfPoint
     public double? LogFlushCostMs { get; init; }
 
     /// <summary>是否含累积型指标（调度驱逐/强占 或 日志管道丢弃/flush），决定是否写 count 行。</summary>
-    public bool HasCumulative => EvictCount != null || PreemptTrigger != null || LogDroppedLines != null || LogFlushCostMs != null;
+    public bool HasCumulative => EvictCount != null || PreemptTrigger != null || LogDroppedLines != null || LogFlushCostMs != null || KvFullPrefill != null;
 
     /// <summary>该点是否含系统层有效指标。</summary>
     public bool HasSystem => CpuPercent != null || MemUsedGb != null || VramUsedMb != null;

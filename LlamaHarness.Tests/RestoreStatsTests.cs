@@ -160,4 +160,73 @@ public class RestoreStatsTests
         Assert.Equal("trae_global", snap.ByKey[0].Key);
         File.Delete(path);
     }
+    // ── v2.23.10 前缀漂移检测 ──
+    [Fact]
+    public void DriftAlert_FullPrefillChain_TriggersAfterThree()
+    {
+        // 存在快照（savedN>0）连续 3 次全量 prefill → 第 3 次触发前缀漂移告警
+        var s = new RestoreStats(TempPath());
+        for (int i = 0; i < 2; i++)
+        {
+            s.RecordRequest("trae_global", 0, wrapperHit: true, savedN: 1000);
+            var r = s.OnPromptEval(5000); // 5000>4096 且 >= 全量估计 → FullPrefill
+            Assert.False(r!.Hit);
+            Assert.Equal("FullPrefill", r.Reason);
+            Assert.False(r.DriftAlert); // 前两次不告警
+        }
+        s.RecordRequest("trae_global", 0, wrapperHit: true, savedN: 1000);
+        var r3 = s.OnPromptEval(5000);
+        Assert.False(r3!.Hit);
+        Assert.True(r3.DriftAlert); // 第 3 次告警
+        Assert.Equal(1, s.DriftAlertCount);
+    }
+
+    [Fact]
+    public void DriftAlert_HitInterruptsChain_ResetsCounting()
+    {
+        // HitByDelta（增量命中）打断全量链 → 重新计数，需再连续 3 次全量才告警
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000); // FP chain=1
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(100);  // HIT 打断 chain=0
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000); // FP chain=1
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000); // FP chain=2
+        s.RecordRequest("k", 0, true, 1000); var r = s.OnPromptEval(5000); // FP chain=3 → 告警
+        Assert.True(r!.DriftAlert);
+        // 打断后再触发一次告警（链归零后允许再次告警）
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(100);  // HIT 重置
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000);
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000);
+        s.RecordRequest("k", 0, true, 1000); var r2 = s.OnPromptEval(5000); // 再次 3 连 → 再次告警
+        Assert.True(r2!.DriftAlert);
+        Assert.Equal(2, s.DriftAlertCount);
+    }
+
+    [Fact]
+    public void DriftAlert_NoSnapshotFullPrefill_NotDrift()
+    {
+        // savedN=0（无快照/首次存档）全量 prefill 是正常行为，不算前缀漂移
+        var s = new RestoreStats(TempPath());
+        for (int i = 0; i < 3; i++)
+        {
+            s.RecordRequest("k", 0, true, savedN: 0);
+            var r = s.OnPromptEval(5000);
+            Assert.False(r!.Hit);
+            Assert.False(r.DriftAlert); // 永不告警
+        }
+        Assert.Equal(0, s.DriftAlertCount);
+    }
+
+    [Fact]
+    public void PerfSnapshot_IncludesFullPrefillCount()
+    {
+        var s = new RestoreStats(TempPath());
+        Assert.Equal(0, s.PerfSnapshot().TotalFullPrefill);
+        s.RecordRequest("k", 0, true, 1000);
+        s.OnPromptEval(5000); // 1 次全量
+        s.RecordRequest("k", 0, true, 100);
+        s.OnPromptEval(500); // 1 次命中
+        var snap = s.PerfSnapshot();
+        Assert.Equal(1, snap.TotalFullPrefill);
+        Assert.Equal(1, snap.TotalHits);
+    }
 }
