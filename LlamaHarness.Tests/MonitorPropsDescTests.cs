@@ -12,6 +12,11 @@ public class MonitorPropsDescTests
     [InlineData("temperature", "采样温度")]
     [InlineData("mirostat_tau", "Mirostat")]
     [InlineData("IgnoreEos", "忽略结束符")]
+    [InlineData("model_path", "模型文件路径")]
+    [InlineData("n_ctx", "上下文窗口")]
+    [InlineData("supports_tool_calls", "工具调用")]
+    [InlineData("cors_proxy_enabled", "跨域")]
+    [InlineData("build_info", "构建版本")]
     public void PropDesc_已知参数_命中中文说明(string fieldName, string expectKeyword)
     {
         var desc = MonitorPanelView.PropDesc(fieldName);
