@@ -28,7 +28,7 @@ public class PerfAnalyzerV2Tests
             "sched,2026-09-01 10:00:04.000,op=slot_select,ms=0.7,key=app_x",
             "sched,2026-09-01 10:00:05.000,op=slot_select,ms=1.3,key=app_y",
             "sched,2026-09-01 10:00:06.000,op=wakeup,ms=3000.0",
-            "count,2026-09-01 10:00:07.000,evict=2,preempt=1,log_dropped=7,log_flush=2.50,kv_hit=95,kv_false=5,saved_n=4096",
+            "count,2026-09-01 10:00:07.000,evict=2,preempt=1,log_dropped=7,log_flush=2.50,kv_hit=95,kv_false=5,saved_n=4096,kv_full=8", // v2.23.10
             "timing,2026-09-01 10:00:08.000,app=a,path=/v1,success=1,total=3200.0",
             "session,2026-09-01 10:00:09.000,type=end,sid=sess1",
             "session,2026-09-01 10:10:00.000,type=start,sid=sess2,ver=2.22",
@@ -56,6 +56,7 @@ public class PerfAnalyzerV2Tests
             Assert.Equal(2, s1.Evict);
             Assert.Equal(1, s1.Preempt);
             Assert.Equal(7, s1.LogDropped);
+            Assert.Equal(8, s1.KvFullPrefill); // v2.23.10
             Assert.Equal(2.5, s1.LogFlushAvgMs);
             Assert.Equal(1, s1.Requests);
             Assert.Equal(3200.0, s1.AvgTotalMs);

@@ -60,6 +60,7 @@ public sealed class PerfSessionSummary
     public long Preempt { get; init; }
     public long LogDropped { get; init; }
     public double? LogFlushAvgMs { get; init; }
+    public long KvFullPrefill { get; init; } // v2.23.10 全量 prefill 累计
     public long Requests { get; init; }
     public double? AvgTotalMs { get; init; }
     public double? MinTgTps { get; init; }
@@ -322,7 +323,8 @@ public static class PerfAnalyzer
                         break;
                     case "count":
                         sb.SetCounts(GetL(kv, "kv_hit"), GetL(kv, "kv_false"), GetL(kv, "saved_n"),
-                            GetL(kv, "evict"), GetL(kv, "preempt"), GetL(kv, "log_dropped"), GetD(kv, "log_flush"));
+                            GetL(kv, "evict"), GetL(kv, "preempt"), GetL(kv, "log_dropped"), GetD(kv, "log_flush"),
+                            GetL(kv, "kv_full")); // v2.23.10 全量 prefill
                         break;
                     case "timing":
                         sb.Requests++;
@@ -386,7 +388,7 @@ public static class PerfAnalyzer
         public double KvSaveSum, KvRestoreSum;
         public int SlotSelectCount, WakeupCount;
         public double SlotSelectSum, SlotSelectMax, WakeupSum;
-        public long KvHit, KvFalseMiss, SavedN, Evict, Preempt, LogDropped, Requests;
+        public long KvHit, KvFalseMiss, SavedN, Evict, Preempt, LogDropped, Requests, KvFullPrefill;
         public double TotalSum;
         public double? LogFlushAvg, MinTg, MaxVram;
         public void AddKvEvent(string? op, double? ms)
@@ -401,7 +403,7 @@ public static class PerfAnalyzer
             if (op == "slot_select") { SlotSelectCount++; SlotSelectSum += ms.Value; if (ms.Value > SlotSelectMax) SlotSelectMax = ms.Value; }
             else if (op == "wakeup") { WakeupCount++; WakeupSum += ms.Value; }
         }
-        public void SetCounts(long? kvHit, long? kvFalse, long? savedN, long? evict, long? preempt, long? logDropped, double? logFlush)
+        public void SetCounts(long? kvHit, long? kvFalse, long? savedN, long? evict, long? preempt, long? logDropped, double? logFlush, long? kvFull = null)
         {
             if (kvHit != null) KvHit = kvHit.Value;
             if (kvFalse != null) KvFalseMiss = kvFalse.Value;
@@ -410,6 +412,7 @@ public static class PerfAnalyzer
             if (preempt != null) Preempt = preempt.Value;
             if (logDropped != null) LogDropped = logDropped.Value;
             if (logFlush != null) LogFlushAvg = logFlush.Value;
+            if (kvFull != null) KvFullPrefill = kvFull.Value; // v2.23.10
         }
         public PerfSessionSummary Build() => new()
         {
@@ -423,7 +426,7 @@ public static class PerfAnalyzer
             WakeupCount = WakeupCount,
             AvgWakeupMs = WakeupCount > 0 ? Math.Round(WakeupSum / WakeupCount, 1) : null,
             KvHit = KvHit, KvFalseMiss = KvFalseMiss, SavedN = SavedN,
-            Evict = Evict, Preempt = Preempt, LogDropped = LogDropped, LogFlushAvgMs = LogFlushAvg,
+            Evict = Evict, Preempt = Preempt, LogDropped = LogDropped, LogFlushAvgMs = LogFlushAvg, KvFullPrefill = KvFullPrefill,
             Requests = Requests, AvgTotalMs = Requests > 0 ? Math.Round(TotalSum / Requests, 1) : null,
             MinTgTps = MinTg is double mt ? Math.Round(mt, 1) : null,
             MaxVramMb = MaxVram is double mv ? Math.Round(mv, 0) : null,

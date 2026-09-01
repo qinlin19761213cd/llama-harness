@@ -129,6 +129,7 @@ public class PerfLogTests
                 PreemptTrigger = 1,
                 LogDroppedLines = 7,
                 LogFlushCostMs = 2.5,
+                KvFullPrefill = 42, // v2.23.10
             });
 
             PerfLog.Stop();
@@ -138,7 +139,7 @@ public class PerfLogTests
             Assert.Contains(lines, l => l.StartsWith("session,") && l.Contains("type=end") && l.Contains("sid=" + sid));
             Assert.Contains(lines, l => l.StartsWith("kv,") && l.Contains("op=save") && l.Contains("ms=12.3") && l.Contains("key=sess-1"));
             Assert.Contains(lines, l => l.StartsWith("sched,") && l.Contains("op=slot_select") && l.Contains("ms=0.7") && l.Contains("key=app_x"));
-            Assert.Contains(lines, l => l.StartsWith("count,") && l.Contains("evict=3") && l.Contains("preempt=1") && l.Contains("log_dropped=7") && l.Contains("log_flush=2.50"));
+            Assert.Contains(lines, l => l.StartsWith("count,") && l.Contains("evict=3") && l.Contains("preempt=1") && l.Contains("log_dropped=7") && l.Contains("log_flush=2.50") && l.Contains("kv_full=42")); // v2.23.10
         }
         finally
         {

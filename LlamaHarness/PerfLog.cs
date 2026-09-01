@@ -99,6 +99,7 @@ public static class PerfLog
         if (p.KvHitDelta is int kh) sb.Append(",kv_hit=").Append(kh);
         if (p.KvFalseMiss is int kf) sb.Append(",kv_false=").Append(kf);
         if (p.SavedN is int sn) sb.Append(",saved_n=").Append(sn);
+        if (p.KvFullPrefill is int kfp) sb.Append(",kv_full=").Append(kfp); // v2.23.10 全量 prefill 累计（前缀漂移观测源）
         WriteLine("count", sb);
     }
 
