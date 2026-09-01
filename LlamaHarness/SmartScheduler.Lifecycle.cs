@@ -168,8 +168,8 @@ public partial class SmartScheduler
             unknownAutoBind: _cfg.UnknownAppAutoBind, maxUnknownKeys: _cfg.UnknownAppMaxKeys);
         _affinity.PerfEvents = SchedEvents; // v2.22 可观测：槽选择耗时/驱逐/强占事件流
         _affinity.UnknownBindEvent = (key, ua) => Log?.Invoke(key != null
-            ? $"[AUTO-BIND] 未知应用自动绑定：{key}（UA={ua}，现有 unknown 键 {_affinity.UnknownKeyCount()}/{_cfg.UnknownAppMaxKeys}）。如需固化规则请配置 affinity_rules。"
-            : $"[AUTO-BIND] unknown 键已达上限 {_cfg.UnknownAppMaxKeys}，新未知应用走随机槽（UA={ua}）。如需独立缓存请手动配置 affinity_rules。");
+            ? $"[AUTO-BIND] 未知应用自动绑定：{key}（UA={ua}，当前 unknown 绑定 {_affinity.UnknownKeyCount()}/{_cfg.UnknownAppMaxKeys}）。如需固化规则请配置 affinity_rules。"
+            : $"[AUTO-BIND] unknown 绑定已达上限 {_cfg.UnknownAppMaxKeys}，新未知应用走随机槽（UA={ua}）。如需独立缓存请手动配置 affinity_rules，或清理 unknown 快照。");
         // 启动时强制：裁剪超额强占到 ≤ slotCount-1（保"至少 1 槽给非强占新任务"不变量）
         var evictedPreemptive = _affinity.EnforcePreemptiveCap();
         if (evictedPreemptive.Count > 0)

@@ -54,6 +54,7 @@ public sealed class SlotAffinity
 
     private readonly bool _unknownAutoBind;
     private readonly int _maxUnknownKeys;
+    private bool _unknownLimitNotified; // 达上限告警限频（首次触发一次，新建成功重置）
 
     public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null,
         bool unknownAutoBind = false, int maxUnknownKeys = 16)
@@ -90,16 +91,30 @@ public sealed class SlotAffinity
         var ua = h["User-Agent"] ?? "";
         if (unknownCount >= _maxUnknownKeys)
         {
-            if (!string.IsNullOrEmpty(ua)) UnknownBindEvent?.Invoke(null, Truncate(ua, 80)); // 达上限告警
+            // 达上限告警限频：仅首次触发（防止健康检查/浏览器请求刷屏）；新建 unknown 绑定成功后重置
+            if (!string.IsNullOrEmpty(ua) && !_unknownLimitNotified)
+            {
+                _unknownLimitNotified = true;
+                UnknownBindEvent?.Invoke(null, Truncate(ua, 80));
+            }
             return null;
         }
-        var uk = AffinityRuleMatcher.TryAutoBindUnknown(h, _maxUnknownKeys, unknownCount);
-        if (uk != null && !string.IsNullOrEmpty(ua)) UnknownBindEvent?.Invoke(uk, Truncate(ua, 80));
-        return uk;
+        return AffinityRuleMatcher.TryAutoBindUnknown(h, _maxUnknownKeys, unknownCount);
     }
 
     /// <summary>截断长 UA 供日志展示（AUTO-BIND 埋点防日志爆炸）。</summary>
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
+
+    /// <summary>v2.23.8 P2：仅真正新建 unknown 绑定时触发 [AUTO-BIND] 事件
+    /// （/v1/models 健康检查、浏览器访问等非推理请求只生成 key 不建绑定 → 不触发，消除日志刷屏）。
+    /// 调用点位于 NewBinding 成功分支（阶段 1 锁内 / 阶段 2 锁内）。</summary>
+    private void NotifyUnknownBindIfNew(string key, NameValueCollection headers)
+    {
+        if (!key.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)) return;
+        _unknownLimitNotified = false; // 新建成功 → 绑定数回落，允许后续再次达上限告警
+        var ua = headers["User-Agent"] ?? "";
+        if (!string.IsNullOrEmpty(ua)) UnknownBindEvent?.Invoke(key, Truncate(ua, 80));
+    }
 
     /// <summary>当前已绑定的未知应用 key 数（unknown_ 前缀，v2.23.8 可观测/上限日志用）。</summary>
     public int UnknownKeyCount()
@@ -161,7 +176,10 @@ public sealed class SlotAffinity
 
             var alloc = TryAllocateLocked(key, autoPre);
             if (alloc.Slot != null)
+            {
+                NotifyUnknownBindIfNew(key, headers); // v2.23.8 P2：新建 unknown 绑定 → [AUTO-BIND]
                 return (alloc.Slot!.Value, key, true, alloc.Evicted, alloc.EvictedSlot, alloc.EvictedKvCache);
+            }
             // 全被强占占满 → 锁外排队（E-5）
         }
 
@@ -174,7 +192,10 @@ public sealed class SlotAffinity
             {
                 var alloc = TryAllocateLocked(key, autoPre);
                 if (alloc.Slot != null)
+                {
+                    NotifyUnknownBindIfNew(key, headers); // v2.23.8 P2：新建 unknown 绑定 → [AUTO-BIND]
                     return (alloc.Slot!.Value, key, true, alloc.Evicted, alloc.EvictedSlot, alloc.EvictedKvCache);
+                }
             }
         }
 

@@ -130,4 +130,44 @@ public class UnknownAppAutoBindTests
         Assert.StartsWith("unknown_", events[0]); // 首次绑定
         Assert.Equal("<limit>", events[1]);        // 达上限
     }
+
+    [Fact]
+    public void UnknownApp_GetAffinityKey_DoesNotFireEvent()
+    {
+        // v2.23.8 P2：/v1/models 健康检查、浏览器访问等非推理请求只生成 key、不建绑定 → 不触发 [AUTO-BIND]（消除日志刷屏）
+        Cleanup();
+        var aff = new SlotAffinity(1, unknownAutoBind: true);
+        var fired = false;
+        aff.UnknownBindEvent = (_, __) => fired = true;
+        var k = aff.GetAffinityKey(Headers(("User-Agent", "kouzi-agent/1.0")));
+        Assert.StartsWith("unknown_", k!);
+        Assert.False(fired);
+    }
+
+    [Fact]
+    public void UnknownApp_ExistingBinding_DoesNotRefireEvent()
+    {
+        // v2.23.8 P2：同 UA 复用已有绑定（NewBinding=false）→ 不再打 [AUTO-BIND]（仅首次新建时一条）
+        Cleanup();
+        var aff = new SlotAffinity(1, unknownAutoBind: true);
+        var fired = 0;
+        aff.UnknownBindEvent = (key, _) => { if (key != null) fired++; };
+        _ = aff.GetSlot(Headers(("User-Agent", "kouzi-agent/1.0"))); // 首次：新建 → 触发 1 次
+        _ = aff.GetSlot(Headers(("User-Agent", "kouzi-agent/1.0"))); // 复用：已有绑定 → 不触发
+        Assert.Equal(1, fired);
+    }
+
+    [Fact]
+    public void UnknownApp_LimitAlert_FiresOncePerRecovery()
+    {
+        // v2.23.8 P2：达上限告警限频——持续达上限只告警一次；新建成功（绑定数回落）后允许再次告警
+        Cleanup();
+        var aff = new SlotAffinity(1, unknownAutoBind: true, maxUnknownKeys: 1);
+        var alerts = 0;
+        aff.UnknownBindEvent = (key, _) => { if (key is null) alerts++; };
+        _ = aff.GetSlot(Headers(("User-Agent", "app1/1"))); // 建绑定
+        _ = aff.GetSlot(Headers(("User-Agent", "app2/1"))); // 达上限 → 首次告警
+        _ = aff.GetSlot(Headers(("User-Agent", "app3/1"))); // 仍达上限 → 限频不再告警
+        Assert.Equal(1, alerts);
+    }
 }
