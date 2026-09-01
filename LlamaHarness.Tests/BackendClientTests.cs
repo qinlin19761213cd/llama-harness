@@ -49,7 +49,7 @@ public class BackendClientTests
         };
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-        using var resp = await client.SendAsync(req, CancellationToken.None);
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
 
         var r = Assert.Single(h.Requests);
         Assert.Equal(HttpMethod.Post, r.Method);
@@ -66,7 +66,7 @@ public class BackendClientTests
             new Uri("http://localhost:8081/v1/chat/completions"))
         { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
 
-        await client.SendAsync(req, CancellationToken.None);
+        await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
 
         var r = Assert.Single(h.Requests);
         Assert.DoesNotContain("text/event-stream", r.Accept);
@@ -87,26 +87,26 @@ public class BackendClientTests
 
     // ── ③ KV 槽位 ──────────────────────────────────────────
     [Theory]
-    [InlineData("save", "dsh_rule_abc", "http://localhost:8081/slots/0?action=save")]
-    [InlineData("restore", "webui_xyz", "http://localhost:8081/slots/3?action=restore")]
+    [InlineData("save", "dsh_rule_abc.bin", "http://localhost:8081/slots/0?action=save")]
+    [InlineData("restore", "webui_xyz.bin", "http://localhost:8081/slots/3?action=restore")]
     [InlineData("erase", null, "http://localhost:8081/slots/5?action=erase")]
-    public async Task Slot动作_URL与body正确(string action, string? key, string expectUrl)
+    public async Task Slot动作_URL与body正确(string action, string? filename, string expectUrl)
     {
         var (client, h) = Make();
-        bool ok = action switch
+        using var resp = action switch
         {
-            "save" => await client.SlotSaveAsync(0, key!, CancellationToken.None),
-            "restore" => await client.SlotRestoreAsync(3, key!, CancellationToken.None),
+            "save" => await client.SlotSaveAsync(0, filename!, CancellationToken.None),
+            "restore" => await client.SlotRestoreAsync(3, filename!, CancellationToken.None),
             _ => await client.SlotEraseAsync(5, CancellationToken.None),
         };
 
-        Assert.True(ok);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var r = Assert.Single(h.Requests);
         Assert.Equal(expectUrl, r.Url);
-        if (key != null)
+        if (filename != null)
         {
             using var doc = JsonDocument.Parse(r.Body!);
-            Assert.Equal(key, doc.RootElement.GetProperty("key").GetString());
+            Assert.Equal(filename, doc.RootElement.GetProperty("filename").GetString());
         }
         else
         {
@@ -115,13 +115,54 @@ public class BackendClientTests
     }
 
     [Fact]
-    public async Task SlotSave_后端500_返回false()
+    public async Task SlotSave_后端500_返回500响应()
     {
         var (client, h) = Make();
         h.Responder = _ => new HttpResponseMessage(HttpStatusCode.InternalServerError);
 
-        var ok = await client.SlotSaveAsync(0, "k", CancellationToken.None);
-        Assert.False(ok);
+        using var resp = await client.SlotSaveAsync(0, "k.bin", CancellationToken.None);
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+    }
+
+    // ── ②' tokenize 计数 ───────────────────────────────────
+    [Fact]
+    public async Task TokenizeAsync_旧路径_tokens数组计数()
+    {
+        var (client, h) = Make();
+        h.Responder = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new StringContent("{\"tokens\":[1,2,3,4,5]}", Encoding.UTF8, "application/json") };
+
+        var n = await client.TokenizeAsync("hello", CancellationToken.None);
+        Assert.Equal(5, n);
+        Assert.Equal("http://localhost:8081/v1/tokenize", Assert.Single(h.Requests).Url);
+    }
+
+    [Fact]
+    public async Task TokenizeAsync_旧路径404_回退新路径()
+    {
+        var (client, h) = Make();
+        var call = 0;
+        h.Responder = _ =>
+        {
+            call++;
+            if (call == 1) return new HttpResponseMessage(HttpStatusCode.NotFound);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"n_tokens\":7}", Encoding.UTF8, "application/json") };
+        };
+
+        var n = await client.TokenizeAsync("hello", CancellationToken.None);
+        Assert.Equal(7, n);
+        Assert.Equal(2, h.Requests.Count);
+        Assert.Equal("http://localhost:8081/tokenize", h.Requests[1].Url);
+    }
+
+    [Fact]
+    public async Task TokenizeAsync_全部失败_返回null()
+    {
+        var (client, h) = Make();
+        h.Responder = _ => new HttpResponseMessage(HttpStatusCode.InternalServerError);
+
+        Assert.Null(await client.TokenizeAsync("hello", CancellationToken.None));
     }
 
     // ── ④ 状态探测（判空降级）───────────────────────────────

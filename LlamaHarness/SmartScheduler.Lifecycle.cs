@@ -179,7 +179,7 @@ public partial class SmartScheduler
         // KV Cache 持久化：KvCachePath 非空时启用（驱逐 save / 重绑定 restore / 休眠前 save / 唤醒后 restore）
         // ctxSize + log 回调：快照元数据 json（ctx_size 字段）+ [EDGE-CASE-SNAPSHOT-CORRUPT] 埋点
         _kvCache = !string.IsNullOrWhiteSpace(_cfg.KvCachePath)
-            ? new KvCacheManager(_hc, _cfg.KvCachePath, _cfg.Parallel, srvPort, _cfg.CtxSize, s => Log?.Invoke(s))
+            ? new KvCacheManager(Backend, _cfg.KvCachePath, _cfg.Parallel, _cfg.CtxSize, s => Log?.Invoke(s))
             : null;
         // 3.1 Restore 命中率可观测：与 KV Cache 同生命周期（累计统计跨唤醒周期持久化于 config/restore_stats.json）
         _restoreStats = _kvCache != null ? new RestoreStats() : null;
@@ -196,7 +196,7 @@ public partial class SmartScheduler
     /// 每 15 秒输出一次进度（大模型加载可达数分钟），避免界面无反馈看似卡死。</summary>
     private async Task WaitReadyAsync(int srvPort)
     {
-        var url = $"http://localhost:{srvPort}/v1/models";
+
         var deadline = DateTime.Now + TimeSpan.FromMinutes(5);
         var start = DateTime.Now;
         int nextProgressAtSec = ProgressFirstSeconds; // 下次进度日志的累计秒数阈值
@@ -205,7 +205,7 @@ public partial class SmartScheduler
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ReadyProbeTimeoutSeconds));
-                using var r = await _hc.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                using var r = await Backend.ProbeAsync("/v1/models", cts.Token);
                 if (r.IsSuccessStatusCode)
                 {
                     var body = await r.Content.ReadAsStringAsync(cts.Token);
@@ -284,9 +284,7 @@ public partial class SmartScheduler
         try
         {
             var body = $"{{\"model\":\"local_model\",\"messages\":[{{\"role\":\"user\",\"content\":\"warm\"}}],\"max_tokens\":1,\"stream\":false,\"n_slots\":[{warmSlot}]}}";
-            using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            using var resp = await _hc.PostAsync(new Uri($"http://localhost:{srvPort}/v1/chat/completions"), content, ct);
+            using var resp = await Backend.ChatCompletionsAsync(body, ct);
             Log?.Invoke($"Warming dummy 预热：HTTP {(int)resp.StatusCode}（slot{warmSlot}，decode graph 捕获）");
         }
         catch (Exception ex)
@@ -461,7 +459,7 @@ public partial class SmartScheduler
         SetPhase(Phase.Standby);
         try { _server.Stop(); } catch { }
         _tickTimer.Dispose();
-        _hc.Dispose();
+        _backend?.Dispose();
         _server.Dispose();
     }
 

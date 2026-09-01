@@ -35,7 +35,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, result, note) = await TokenGuard.GuardAsync(null!, 0, body, 10_000, counter);
+        var (ok, result, note) = await TokenGuard.GuardAsync(null!, body, 10_000, counter);
 
         Assert.True(ok);
         Assert.Null(note);
@@ -51,7 +51,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);
         Assert.True(modified);
@@ -71,7 +71,7 @@ public class TokenGuardTrimTests
         int budget = 250;
         Func<string, Task<int?>> counter = async t => t.Length / 10;
 
-        var (ok, _, _) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, _, _) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);
         var msgs = root["messages"]!.AsArray();
@@ -98,7 +98,7 @@ public class TokenGuardTrimTests
             return calls == 1 ? t.Length / 10 : null;
         };
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);          // 降级不阻断
         Assert.False(modified);   // 未修改状态透传
@@ -118,7 +118,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, modified, _) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, modified, _) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);
         Assert.True(modified);
@@ -139,7 +139,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, 100, counter);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 100, counter);
 
         Assert.True(ok);
         Assert.False(modified);
@@ -157,7 +157,7 @@ public class TokenGuardTrimTests
         int budget = 300;
         Func<string, Task<int?>> counter = async t => null; // 模拟 tokenize 端点 404/持续失败
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter, failOpenOnTokenizeError: false);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, budget, counter, failOpenOnTokenizeError: false);
 
         Assert.True(ok);
         Assert.True(modified);          // 必须裁剪，禁止未裁剪穿透

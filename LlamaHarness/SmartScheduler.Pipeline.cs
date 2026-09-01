@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -91,7 +91,7 @@ public partial class SmartScheduler
         try
         {
             using var msg = build();
-            resp = await _hc.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead);
+            resp = await Backend.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or System.Net.Sockets.SocketException)
         {
@@ -102,7 +102,7 @@ public partial class SmartScheduler
             Log?.Invoke("转发连接异常，正在重试…");
             await Task.Delay(ReconnectDelayMs);
             using var retryMsg = build();
-            resp = await _hc.SendAsync(retryMsg, HttpCompletionOption.ResponseHeadersRead);
+            resp = await Backend.SendAsync(retryMsg, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
         }
         return resp;
     }
@@ -127,7 +127,7 @@ public partial class SmartScheduler
                 // 1. 激进裁剪：预算收紧 50%（比正常预算更严格）
                 int tightBudget = Math.Max(AppConfig.MinInputBudgetTokens, _cfg.GetInputBudget() / 2);
                 // 修复：tokenize 失败禁止 fail-open 穿透（否则重发未裁剪 body 死循环 400），退化为字符级保守估算继续裁剪
-                var (ok, modified, note) = await TokenGuard.GuardAsync(root, _hc, _backendPort, tightBudget, failOpenOnTokenizeError: false);
+                var (ok, modified, note) = await TokenGuard.GuardAsync(root, Backend, tightBudget, failOpenOnTokenizeError: false);
                 if (!ok)
                 {
                     // 裁剪失败：原样返回 400
@@ -155,7 +155,7 @@ public partial class SmartScheduler
                 HttpResponseMessage retryResp;
                 try
                 {
-                    retryResp = await _hc.SendAsync(newMsg, HttpCompletionOption.ResponseHeadersRead);
+                    retryResp = await Backend.SendAsync(newMsg, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
                 }
                 catch (HttpRequestException)
                 {
@@ -347,10 +347,10 @@ public partial class SmartScheduler
                 // SSE 流式响应：必须设置 text/event-stream（llama-server 返回 application/json，
                 // 直接复制会导致客户端按 JSON 解析 SSE 行报错 "Unexpected non-whitespace character after JSON"）
                 outResp.ContentType = "text/event-stream";
-                (completed, accumulated) = await OutputContinuer.HandleStreamAsync(_hc, uri, _backendPort, finalBody, resp, outResp, _cfg, log2, onTrunc);
+                (completed, accumulated) = await OutputContinuer.HandleStreamAsync(Backend, uri, finalBody, resp, outResp, _cfg, log2, onTrunc);
             }
             else
-                (completed, accumulated) = await OutputContinuer.HandleNonStreamAsync(_hc, uri, _backendPort, finalBody, resp, outResp, _cfg, log2, _cfg.CrashRecoveryEnabled);
+                (completed, accumulated) = await OutputContinuer.HandleNonStreamAsync(Backend, uri, finalBody, resp, outResp, _cfg, log2, _cfg.CrashRecoveryEnabled);
         }
         else
         {

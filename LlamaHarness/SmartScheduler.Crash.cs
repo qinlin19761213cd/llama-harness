@@ -113,7 +113,7 @@ public partial class SmartScheduler
                     if (useSnapshot)
                     {
                         var target = contBody ?? finalBody;
-                        var (ok, guarded, note) = await TokenGuard.GuardAsync(_hc, _backendPort, target, budget);
+                        var (ok, guarded, note) = await TokenGuard.GuardAsync(Backend, target, budget);
                         if (!ok)
                         {
                             log?.Invoke($"续接中止：{note}（内存余量不足且上下文无法裁剪）。");
@@ -133,7 +133,7 @@ public partial class SmartScheduler
             // ── 全量重放路径（无快照 / restore 失败）：严格预算 TokenGuard 裁剪 + 原请求重发 ──
             if (replayBody == null)
             {
-                var (ok, guarded, note) = await TokenGuard.GuardAsync(_hc, _backendPort, finalBody, budget);
+                var (ok, guarded, note) = await TokenGuard.GuardAsync(Backend, finalBody, budget);
                 if (!ok)
                 {
                     log?.Invoke($"重放中止：{note}（内存余量不足且上下文无法裁剪）。");
@@ -144,7 +144,7 @@ public partial class SmartScheduler
             }
 
             log?.Invoke(usedSnapshot ? "崩溃快照接续：restore KV + 回填已生成部分 + 续接指令…" : "全量重放：原请求重发（严格预算）…");
-            var (replayCompleted, _) = await OutputContinuer.SendAndPipeStreamAsync(_hc, uri, _backendPort, replayBody, outResp, _cfg, log, writeGate);
+            var (replayCompleted, _) = await OutputContinuer.SendAndPipeStreamAsync(Backend, uri, replayBody, outResp, _cfg, log, writeGate);
             if (!replayCompleted)
                 log?.Invoke("重放流再次中断（二次崩溃？）：本次恢复失败，agent 侧重试将走现有机制。");
         });
@@ -217,7 +217,7 @@ public partial class SmartScheduler
 
             // 严格预算全量重放（无快照）：重启后内存状态未知，统一收紧 25% 防同点再崩
             int budget = Math.Max(AppConfig.MinInputBudgetTokens, (int)(_cfg.GetInputBudget() * TightBudgetFactor));
-            var (ok, guarded, note) = await TokenGuard.GuardAsync(_hc, _backendPort, finalBody, budget);
+            var (ok, guarded, note) = await TokenGuard.GuardAsync(Backend, finalBody, budget);
             if (!ok)
             {
                 log?.Invoke($"重放中止：{note}（上下文无法裁剪到严格预算）。");
@@ -226,7 +226,7 @@ public partial class SmartScheduler
             if (note != null) log?.Invoke(note);
 
             log?.Invoke("全量重放：原请求重发（严格预算，无快照）…");
-            var (replayCompleted, _) = await OutputContinuer.SendAndPipeStreamAsync(_hc, replayUri, _backendPort, guarded ?? finalBody, outResp, _cfg, log, writeGate);
+            var (replayCompleted, _) = await OutputContinuer.SendAndPipeStreamAsync(Backend, replayUri, guarded ?? finalBody, outResp, _cfg, log, writeGate);
             if (!replayCompleted)
                 log?.Invoke("重放流再次中断：本次恢复失败。");
         });

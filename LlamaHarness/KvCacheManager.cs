@@ -13,10 +13,10 @@ namespace LlamaHarness;
 /// </summary>
 public sealed class KvCacheManager
 {
-    private readonly HttpClient _http;
+    private readonly IBackendClient _backend;
     private readonly string _cachePath;
     private readonly int _slotCount;
-    private readonly int _backendPort;
+
     private readonly int _ctxSize;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
@@ -38,18 +38,16 @@ public sealed class KvCacheManager
         public long SizeBytes;
     }
 
-    public KvCacheManager(HttpClient http, string cachePath, int slotCount, int backendPort, int ctxSize = 0, Action<string>? log = null)
+    public KvCacheManager(IBackendClient backend, string cachePath, int slotCount, int ctxSize = 0, Action<string>? log = null)
     {
-        _http = http;
+        _backend = backend;
         _cachePath = cachePath.TrimEnd('/');
         _slotCount = Math.Max(1, slotCount);
-        _backendPort = backendPort;
         _ctxSize = ctxSize;
         _log = log;
         LoadIndex();
     }
 
-    private string SlotUrl(int slot, string action) => $"http://localhost:{_backendPort}/slots/{slot}?action={action}";
 
     /// <summary>缓存目录路径。</summary>
     public string CachePath => _cachePath;
@@ -117,11 +115,7 @@ public sealed class KvCacheManager
     {
         try
         {
-            var body = new { filename = $"{Sanitize(key)}.bin" };
-            var json = JsonSerializer.Serialize(body);
-            var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            var resp = await _http.PostAsync(SlotUrl(slot, "save"), content, ct);
+            var resp = await _backend.SlotSaveAsync(slot, $"{Sanitize(key)}.bin", ct);
             var text = await resp.Content.ReadAsStringAsync();
             if (resp.IsSuccessStatusCode)
             {
@@ -247,18 +241,14 @@ public sealed class KvCacheManager
         // restore 前置校验：快照文件/元数据损坏 → [EDGE-CASE-SNAPSHOT-CORRUPT] + 废弃（全量 prefill 兜底）
         if (!ValidateSnapshot(key)) return false;
 
-        var body = new { filename = $"{Sanitize(key)}.bin" };
-        var json = JsonSerializer.Serialize(body);
-        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-        var resp = await _http.PostAsync(SlotUrl(slot, "restore"), content, CancellationToken.None);
+        var resp = await _backend.SlotRestoreAsync(slot, $"{Sanitize(key)}.bin", CancellationToken.None);
         return resp.IsSuccessStatusCode;
     }
 
     /// <summary>擦除槽位 KV（不删缓存文件）。</summary>
     public async Task<bool> EraseAsync(int slot)
     {
-        var resp = await _http.PostAsync(SlotUrl(slot, "erase"), null, CancellationToken.None);
+        var resp = await _backend.SlotEraseAsync(slot, CancellationToken.None);
         return resp.IsSuccessStatusCode;
     }
 

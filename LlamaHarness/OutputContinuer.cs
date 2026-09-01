@@ -39,15 +39,15 @@ public static class OutputContinuer
     /// <param name="onTruncation">截断断点回调：finish_reason=length 触发、续接请求发出前调用（槽位 KV 仍完整，可 save 断点快照）。null = 不启用。</param>
     /// <returns>(Completed, Accumulated)：Completed=false 表示流中断（需崩溃恢复）；Accumulated = 已生成内容。</returns>
     public static Task<(bool Completed, string Accumulated)> HandleStreamAsync(
-        HttpClient hc, Uri uri, int backendPort, string originalBody,
+        IBackendClient backend, Uri uri, string originalBody,
         HttpResponseMessage firstResp, HttpListenerResponse outResp,
         AppConfig cfg, Action<string>? log, Func<Task>? onTruncation = null)
-        => PipeLoop(hc, uri, backendPort, originalBody, firstResp, outResp, cfg, log, onTruncation: onTruncation);
+        => PipeLoop(backend, uri, originalBody, firstResp, outResp, cfg, log, onTruncation: onTruncation);
 
     /// <summary>发起新的推理请求并把 SSE 灌入客户端（崩溃恢复重放路径；同样支持截断续接）。</summary>
     /// <param name="writeGate">写门控：与并发 keep-alive 写入互斥，防 SSE 行交错损坏。null = 无并发写者（普通路径）。</param>
     public static async Task<(bool Completed, string Accumulated)> SendAndPipeStreamAsync(
-        HttpClient hc, Uri uri, int backendPort, string body,
+        IBackendClient backend, Uri uri, string body,
         HttpListenerResponse outResp, AppConfig cfg, Action<string>? log,
         SemaphoreSlim? writeGate = null)
     {
@@ -56,13 +56,13 @@ public static class OutputContinuer
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(cfg.ContinuationTimeoutSeconds));
-        var resp = await hc.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        return await PipeLoop(hc, uri, backendPort, body, resp, outResp, cfg, log, writeGate);
+        var resp = await backend.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        return await PipeLoop(backend, uri, body, resp, outResp, cfg, log, writeGate);
     }
 
     /// <summary>核心管道循环：灌一轮 SSE；截断时自动续接（最多 MaxContinuations 轮）。</summary>
     private static async Task<(bool Completed, string Accumulated)> PipeLoop(
-        HttpClient hc, Uri uri, int backendPort, string originalBody,
+        IBackendClient backend, Uri uri, string originalBody,
         HttpResponseMessage firstResp, HttpListenerResponse outResp,
         AppConfig cfg, Action<string>? log, SemaphoreSlim? writeGate = null,
         Func<Task>? onTruncation = null)
@@ -98,7 +98,7 @@ public static class OutputContinuer
 
                 // TokenGuard 防护（续接输入可能超预算）
                 int budget = cfg.GetInputBudget();
-                var (ok, guarded, note) = await TokenGuard.GuardAsync(hc, backendPort, originalBody, budget);
+                var (ok, guarded, note) = await TokenGuard.GuardAsync(backend, originalBody, budget);
                 if (!ok) { log?.Invoke($"续接中止：{note}"); return (false, state.Accumulated.ToString()); }
                 if (guarded != null && guarded != originalBody) originalBody = guarded;
                 if (note != null) log?.Invoke(note);
@@ -111,7 +111,7 @@ public static class OutputContinuer
                         Content = new StringContent(originalBody, Encoding.UTF8, "application/json"),
                     };
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(cfg.ContinuationTimeoutSeconds));
-                    resp = await hc.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                    resp = await backend.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
                     round++;
                     log?.Invoke($"续接触发（第 {round} 轮）：输出截断（finish_reason=length），自动续接…");
                 }
@@ -376,7 +376,7 @@ public static class OutputContinuer
     /// <summary>非流式续接：读完整 JSON 响应；finish_reason=length 时循环续接；末轮归一化 finish_reason=stop + 合并 usage。</summary>
     /// <returns>(Completed, Accumulated)：Completed=false 表示 bad_alloc 错误（恢复启用时不转发错误体，交给崩溃恢复）。</returns>
     public static async Task<(bool Completed, string Accumulated)> HandleNonStreamAsync(
-        HttpClient hc, Uri uri, int backendPort, string originalBody,
+        IBackendClient backend, Uri uri, string originalBody,
         HttpResponseMessage firstResp, HttpListenerResponse outResp,
         AppConfig cfg, Action<string>? log, bool crashRecoveryEnabled)
     {
@@ -405,7 +405,7 @@ public static class OutputContinuer
             originalBody = nextBody;
 
             int budget = cfg.GetInputBudget();
-            var (ok, guarded, note) = await TokenGuard.GuardAsync(hc, backendPort, originalBody, budget);
+            var (ok, guarded, note) = await TokenGuard.GuardAsync(backend, originalBody, budget);
             if (!ok) { log?.Invoke($"续接中止：{note}"); break; }
             if (guarded != null && guarded != originalBody) originalBody = guarded;
             if (note != null) log?.Invoke(note);
@@ -417,7 +417,7 @@ public static class OutputContinuer
                     Content = new StringContent(originalBody, Encoding.UTF8, "application/json"),
                 };
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(cfg.ContinuationTimeoutSeconds));
-                using var r2 = await hc.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                using var r2 = await backend.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
                 body = Encoding.UTF8.GetString(await r2.Content.ReadAsByteArrayAsync(cts.Token));
                 round++;
                 log?.Invoke($"续接触发（第 {round} 轮）：输出截断，自动续接…");

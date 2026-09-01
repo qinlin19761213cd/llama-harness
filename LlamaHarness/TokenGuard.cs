@@ -20,41 +20,11 @@ public static class TokenGuard
     /// <summary>经后端 tokenize 端点计数 token。优先 /v1/tokenize（OpenAI 兼容旧路径），失败回退 /tokenize（llama.cpp b10676+ 新路径）。
     /// 故障实证：b10676 已移除 /v1/tokenize（实测 404），tokenize 迁移到 /tokenize；双路径保证新旧版本兼容。
     /// 每次失败输出 [TOKEN-GUARD-WARN] 诊断日志（HTTP 码/异常），消除"只见 FAILED 不知为何"的盲区。全部失败返回 null（调用方降级）。</summary>
-    public static async Task<int?> CountTokensAsync(HttpClient hc, int port, string text)
+    /// <summary>经后端 tokenize 端点计数 token（双路径容错已下沉到 IBackendClient.TokenizeAsync）。失败返回 null（调用方降级）。</summary>
+    public static async Task<int?> CountTokensAsync(IBackendClient backend, string text)
     {
-        string[] endpoints = { "/v1/tokenize", "/tokenize" };
-        for (int i = 0; i < endpoints.Length; i++)
-        {
-            try
-            {
-                var payload = new JsonObject { ["content"] = text };
-                using var req = new HttpRequestMessage(HttpMethod.Post, $"http://localhost:{port}{endpoints[i]}")
-                {
-                    Content = new StringContent(payload.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
-                };
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GuardTimeoutSeconds));
-                using var resp = await hc.SendAsync(req, cts.Token);
-                if (!resp.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} → HTTP {(int)resp.StatusCode}，尝试下一路径");
-                    continue;
-                }
-                var body = await resp.Content.ReadAsStringAsync(cts.Token);
-                using var doc = JsonDocument.Parse(body);
-                var root = doc.RootElement;
-                // 兼容两种响应格式：{"tokens":[...]}（数数组长度）/ {"n_tokens":N}
-                if (root.TryGetProperty("tokens", out var toks) && toks.ValueKind == JsonValueKind.Array)
-                    return toks.GetArrayLength();
-                if (root.TryGetProperty("n_tokens", out var n) && n.TryGetInt32(out var v))
-                    return v;
-                Console.WriteLine($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 响应缺少 tokens/n_tokens 字段，尝试下一路径");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 异常：{ex.Message}，尝试下一路径");
-            }
-        }
-        return null; // 全部路径失败：降级
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GuardTimeoutSeconds));
+        return await backend.TokenizeAsync(text, cts.Token);
     }
 
     /// <summary>
@@ -63,14 +33,14 @@ public static class TokenGuard
     /// 返回 (Ok, Modified, Note)。
     /// </summary>
     public static async Task<(bool Ok, bool Modified, string? Note)> MeasureAsync(
-        JsonObject root, HttpClient hc, int backendPort, int budget,
+        JsonObject root, IBackendClient backend, int budget,
         int reservedOutput, int reservedOverhead,
         Func<string, Task<int?>>? countTokens = null)
     {
         var messages = root["messages"] as JsonArray;
         if (messages == null || messages.Count == 0) return (true, false, null);
 
-        Func<string, Task<int?>> counter = countTokens ?? ((string t) => CountTokensAsync(hc, backendPort, t));
+        Func<string, Task<int?>> counter = countTokens ?? ((string t) => CountTokensAsync(backend, t));
         int msgEst = await counter(BuildMessagesText(messages)) ?? -1;
 
         // 强制计量日志（不管是否裁剪都输出，供 Streamlit+DuckDB 统计）
@@ -79,7 +49,7 @@ public static class TokenGuard
             : $"[TOKEN-GUARD] budget={budget}, msg_est=FAILED(tokenize), reserved_out={reservedOutput}, reserved_overhead={reservedOverhead}";
         Console.WriteLine(logLine);
 
-        var (ok, modified, note) = await GuardAsync(root, hc, backendPort, budget, counter);
+        var (ok, modified, note) = await GuardAsync(root, backend, budget, counter);
         // 合并计量信息到 note（调用方统一输出）
         if (note != null) return (ok, modified, $"{logLine}\n{note}");
         return (ok, modified, logLine);
@@ -92,7 +62,7 @@ public static class TokenGuard
     /// countTokens 可注入（单测用假计数器）；默认走后端 /v1/tokenize。
     /// </summary>
     public static async Task<(bool Ok, bool Modified, string? Note)> GuardAsync(
-        JsonObject root, HttpClient hc, int backendPort, int budget,
+        JsonObject root, IBackendClient backend, int budget,
         Func<string, Task<int?>>? countTokens = null, bool failOpenOnTokenizeError = true)
     {
         var messages = root["messages"] as JsonArray;
@@ -100,7 +70,7 @@ public static class TokenGuard
 
         // tokenize 失败时：failOpenOnTokenizeError=true（默认）→ 返回 null 触发降级放行（正常热路径保持 fail-open）；
         // =false（400 自愈兜底）→ 退化为字符级保守估算，保证裁剪决策仍有依据，禁止未裁剪穿透死循环
-        Func<string, Task<int?>> rawCounter = countTokens ?? ((string t) => CountTokensAsync(hc, backendPort, t));
+        Func<string, Task<int?>> rawCounter = countTokens ?? ((string t) => CountTokensAsync(backend, t));
         Func<string, Task<int?>> counter = async t =>
         {
             int? n = await rawCounter(t);
@@ -214,7 +184,7 @@ public static class TokenGuard
     /// 最小集仍超预算 → (false, null, 错误信息)，调用方返回 400。
     /// </summary>
     public static async Task<(bool Ok, string? Body, string? Note)> GuardAsync(
-        HttpClient hc, int backendPort, string body, int budget,
+        IBackendClient backend, string body, int budget,
         Func<string, Task<int?>>? countTokens = null)
     {
         // 解析 body 提取 messages（非 JSON / 无 messages → 透传）
@@ -229,7 +199,7 @@ public static class TokenGuard
         }
         if (root == null) return (true, body, null);
 
-        var (ok, modified, note) = await GuardAsync(root, hc, backendPort, budget, countTokens);
+        var (ok, modified, note) = await GuardAsync(root, backend, budget, countTokens);
         return (ok, ok ? (modified ? root.ToJsonString() : body) : null, note);
     }
 

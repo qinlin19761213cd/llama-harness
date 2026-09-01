@@ -22,18 +22,13 @@ public sealed partial class SmartScheduler : IDisposable
 
     private readonly AppConfig _cfg;
     private readonly LlamaServerProcess _server = new();
-    // 代理用 HttpClient：推理请求可能很长，禁用客户端超时。
-    // E-7：keep-alive + 池化连接寿命上限（替代 Connection: close）：
-    // 休眠/唤醒后残留的死连接由 PooledConnectionLifetime 自然过期淘汰；
-    // 偶发死连接命中时由 SendAndPipeAsync 的 500ms 重试兜底。
-    private readonly HttpClient _hc = new(new SocketsHttpHandler
-    {
-        PooledConnectionLifetime = TimeSpan.FromSeconds(30),
-        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60),
-    })
-    {
-        Timeout = System.Threading.Timeout.InfiniteTimeSpan,
-    };
+    // 后端客户端（IBackendClient）：推理/计量/探测统一走 LlamaServerClient（HttpClient 唯一化，v2.26）。
+    // E-7：keep-alive + 池化连接寿命上限（替代 Connection: close）——
+    // 休眠/唤醒后残留的死连接由 PooledConnectionLifetime 自然过期淘汰；偶发死连接由 SendAndPipeAsync 500ms 重试兜底。
+    private IBackendClient? _backend;
+    /// <summary>懒加载后端客户端：baseUrl 依赖运行时探测的 _backendPort，首次使用才构建。</summary>
+    private IBackendClient Backend => _backend ??= new LlamaServerClient($"http://localhost:{_backendPort}");
+
     private readonly HttpListener _listener = new();
     private readonly System.Threading.Timer _tickTimer;
     private readonly object _wakeGate = new();

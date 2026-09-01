@@ -71,7 +71,7 @@ public partial class SmartScheduler
         if (RequestProcessor.IsChatCompletions(p) && _cfg.TokenGuardEnabled && root != null)
         {
             var budget = _cfg.GetInputBudget(); // 多槽均分总容量：CtxSize ÷ Parallel − 输出预留 − Prompt头部开销预留
-            var (ok, _, note) = await TokenGuard.MeasureAsync(root, _hc, _backendPort, budget, _cfg.ReservedOutputTokens, _cfg.ReservedPromptOverhead);
+            var (ok, _, note) = await TokenGuard.MeasureAsync(root, Backend, budget, _cfg.ReservedOutputTokens, _cfg.ReservedPromptOverhead);
             if (!ok)
             {
                 Log?.Invoke($"Token Guard 拒绝：{note}");
