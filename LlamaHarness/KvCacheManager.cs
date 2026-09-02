@@ -13,10 +13,10 @@ namespace LlamaHarness;
 /// </summary>
 public sealed class KvCacheManager
 {
-    private readonly HttpClient _http;
+    private readonly IBackendClient _backend;
     private readonly string _cachePath;
     private readonly int _slotCount;
-    private readonly int _backendPort;
+
     private readonly int _ctxSize;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
@@ -24,14 +24,8 @@ public sealed class KvCacheManager
 
     /// <summary>缓存索引持久化文件（exe 同目录）。</summary>
     /// <summary>KV Cache 索引路径：项目目录下 config/kv_cache_index.json。</summary>
-    private static readonly string IndexPath = Path.Combine(AppContext.BaseDirectory, "config", "kv_cache_index.json");
-
-    /// <summary>确保 config/ 目录存在（幂等）。</summary>
-    private static void EnsureConfigDir()
-    {
-        var dir = Path.Combine(AppContext.BaseDirectory, "config");
-        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-    }
+    private const int StaleEntryDays = 30;
+    private static readonly string IndexPath = AppPaths.KvCacheIndexJson;
 
     /// <summary>key → (slot, savedAt, nTokens, sizeBytes)。</summary>
     private readonly Dictionary<string, CacheEntry> _index = new(StringComparer.OrdinalIgnoreCase);
@@ -44,18 +38,16 @@ public sealed class KvCacheManager
         public long SizeBytes;
     }
 
-    public KvCacheManager(HttpClient http, string cachePath, int slotCount, int backendPort, int ctxSize = 0, Action<string>? log = null)
+    public KvCacheManager(IBackendClient backend, string cachePath, int slotCount, int ctxSize = 0, Action<string>? log = null)
     {
-        _http = http;
+        _backend = backend;
         _cachePath = cachePath.TrimEnd('/');
         _slotCount = Math.Max(1, slotCount);
-        _backendPort = backendPort;
         _ctxSize = ctxSize;
         _log = log;
         LoadIndex();
     }
 
-    private string SlotUrl(int slot, string action) => $"http://localhost:{_backendPort}/slots/{slot}?action={action}";
 
     /// <summary>缓存目录路径。</summary>
     public string CachePath => _cachePath;
@@ -123,11 +115,7 @@ public sealed class KvCacheManager
     {
         try
         {
-            var body = new { filename = $"{Sanitize(key)}.bin" };
-            var json = JsonSerializer.Serialize(body);
-            var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            var resp = await _http.PostAsync(SlotUrl(slot, "save"), content, ct);
+            var resp = await _backend.SlotSaveAsync(slot, $"{Sanitize(key)}.bin", ct);
             var text = await resp.Content.ReadAsStringAsync();
             if (resp.IsSuccessStatusCode)
             {
@@ -253,26 +241,35 @@ public sealed class KvCacheManager
         // restore 前置校验：快照文件/元数据损坏 → [EDGE-CASE-SNAPSHOT-CORRUPT] + 废弃（全量 prefill 兜底）
         if (!ValidateSnapshot(key)) return false;
 
-        var body = new { filename = $"{Sanitize(key)}.bin" };
-        var json = JsonSerializer.Serialize(body);
-        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-        var resp = await _http.PostAsync(SlotUrl(slot, "restore"), content, CancellationToken.None);
+        var resp = await _backend.SlotRestoreAsync(slot, $"{Sanitize(key)}.bin", CancellationToken.None);
         return resp.IsSuccessStatusCode;
     }
 
     /// <summary>擦除槽位 KV（不删缓存文件）。</summary>
     public async Task<bool> EraseAsync(int slot)
     {
-        var resp = await _http.PostAsync(SlotUrl(slot, "erase"), null, CancellationToken.None);
+        var resp = await _backend.SlotEraseAsync(slot, CancellationToken.None);
         return resp.IsSuccessStatusCode;
     }
 
     /// <summary>
     /// 清空缓存：删除缓存目录下所有 *.bin + erase 全部槽位。
+    /// AH-10：先等待在途 save 完成（后台每轮 save 与清空并发时，避免删除后文件被重写、索引"复活"）。
     /// </summary>
     public async Task<int> ClearAllAsync()
     {
+        // AH-10：等待在途 save 结束（最长 ~5s），再执行删除
+        for (int i = 0; i < 50; i++)
+        {
+            Task[] inflight;
+            lock (_gate)
+            {
+                if (_inflightSaves.Count == 0) break;
+                inflight = _inflightSaves.Values.ToArray();
+            }
+            try { await Task.WhenAll(inflight); } catch { /* save 失败不影响清空 */ }
+        }
+
         int deleted = 0;
         try
         {
@@ -292,23 +289,23 @@ public sealed class KvCacheManager
             try { await EraseAsync(i); } catch { /* 忽略 */ }
         }
 
-        // O-17：_index 变更统一在 lock(_gate) 内（与 RecordSave/Snapshot/LoadIndex 一致）
+        // O-17：_index 变更统一在 lock(_gate) 内（与 RecordSave/Snapshot/LoadIndex 一致）；索引写盘移锁外（AH-13）
         lock (_gate)
         {
             _index.Clear();
-            SaveIndex();
         }
+        SaveIndex();
         return deleted;
     }
 
-    /// <summary>记录 save 成功（更新索引）。</summary>
+    /// <summary>记录 save 成功（更新索引）。AH-13：锁内只更新内存索引，索引写盘移锁外（不阻塞并发 save/restore）。</summary>
     private void RecordSave(string key, int slot, int nTokens, long sizeBytes)
     {
         lock (_gate)
         {
             _index[key] = new CacheEntry { Slot = slot, SavedAt = DateTime.Now, NTokens = nTokens, SizeBytes = sizeBytes };
-            SaveIndex();
         }
+        SaveIndex();
     }
 
     /// <summary>缓存索引快照（UI 展示用）。</summary>
@@ -338,7 +335,7 @@ public sealed class KvCacheManager
                 if (prop.Value.TryGetProperty("savedAt", out var sa)) savedAt = sa.GetString() ?? "";
                 if (prop.Value.TryGetProperty("nTokens", out var nt)) nTokens = nt.GetInt32();
                 if (prop.Value.TryGetProperty("sizeBytes", out var sb)) sizeBytes = sb.GetInt32();
-                if (!DateTime.TryParse(savedAt, out var dt)) dt = DateTime.Now.AddDays(-30);
+                if (!DateTime.TryParse(savedAt, out var dt)) dt = DateTime.Now.AddDays(-StaleEntryDays);
                 _index[prop.Name] = new CacheEntry { Slot = slot, SavedAt = dt, NTokens = nTokens, SizeBytes = sizeBytes };
             }
         }
@@ -363,7 +360,7 @@ public sealed class KvCacheManager
                     ["sizeBytes"] = kv.Value.SizeBytes
                 };
             }
-            EnsureConfigDir();
+            AppPaths.EnsureConfigDir();
             File.WriteAllText(IndexPath, obj.ToJsonString());
         }
         catch

@@ -15,7 +15,11 @@ namespace LlamaHarness;
 /// </summary>
 public static class OutputContinuer
 {
+    private const int FlushDelayMs = 2000;
+    private const int HeldLineMax = 65536;
     private const string ContinuePrompt = "请继续输出，不要重复已有内容，延续上文逻辑完成剩余内容";
+    /// <summary>AH-3：流式读 idle 超时（毫秒）。后端长期无字节时判定疑似假死（10 分钟足够容忍大上下文 prefill / 长思考）。</summary>
+    private const int BackendIdleTimeoutMs = 600_000;
 
     /// <summary>单轮 SSE 管道结果。</summary>
     private enum RoundOutcome { Normal, Truncated, Aborted }
@@ -35,15 +39,15 @@ public static class OutputContinuer
     /// <param name="onTruncation">截断断点回调：finish_reason=length 触发、续接请求发出前调用（槽位 KV 仍完整，可 save 断点快照）。null = 不启用。</param>
     /// <returns>(Completed, Accumulated)：Completed=false 表示流中断（需崩溃恢复）；Accumulated = 已生成内容。</returns>
     public static Task<(bool Completed, string Accumulated)> HandleStreamAsync(
-        HttpClient hc, Uri uri, int backendPort, string originalBody,
+        IBackendClient backend, Uri uri, string originalBody,
         HttpResponseMessage firstResp, HttpListenerResponse outResp,
         AppConfig cfg, Action<string>? log, Func<Task>? onTruncation = null)
-        => PipeLoop(hc, uri, backendPort, originalBody, firstResp, outResp, cfg, log, onTruncation: onTruncation);
+        => PipeLoop(backend, uri, originalBody, firstResp, outResp, cfg, log, onTruncation: onTruncation);
 
     /// <summary>发起新的推理请求并把 SSE 灌入客户端（崩溃恢复重放路径；同样支持截断续接）。</summary>
     /// <param name="writeGate">写门控：与并发 keep-alive 写入互斥，防 SSE 行交错损坏。null = 无并发写者（普通路径）。</param>
     public static async Task<(bool Completed, string Accumulated)> SendAndPipeStreamAsync(
-        HttpClient hc, Uri uri, int backendPort, string body,
+        IBackendClient backend, Uri uri, string body,
         HttpListenerResponse outResp, AppConfig cfg, Action<string>? log,
         SemaphoreSlim? writeGate = null)
     {
@@ -52,13 +56,13 @@ public static class OutputContinuer
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(cfg.ContinuationTimeoutSeconds));
-        var resp = await hc.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        return await PipeLoop(hc, uri, backendPort, body, resp, outResp, cfg, log, writeGate);
+        var resp = await backend.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        return await PipeLoop(backend, uri, body, resp, outResp, cfg, log, writeGate);
     }
 
     /// <summary>核心管道循环：灌一轮 SSE；截断时自动续接（最多 MaxContinuations 轮）。</summary>
     private static async Task<(bool Completed, string Accumulated)> PipeLoop(
-        HttpClient hc, Uri uri, int backendPort, string originalBody,
+        IBackendClient backend, Uri uri, string originalBody,
         HttpResponseMessage firstResp, HttpListenerResponse outResp,
         AppConfig cfg, Action<string>? log, SemaphoreSlim? writeGate = null,
         Func<Task>? onTruncation = null)
@@ -94,7 +98,7 @@ public static class OutputContinuer
 
                 // TokenGuard 防护（续接输入可能超预算）
                 int budget = cfg.GetInputBudget();
-                var (ok, guarded, note) = await TokenGuard.GuardAsync(hc, backendPort, originalBody, budget);
+                var (ok, guarded, note) = await TokenGuard.GuardAsync(backend, originalBody, budget);
                 if (!ok) { log?.Invoke($"续接中止：{note}"); return (false, state.Accumulated.ToString()); }
                 if (guarded != null && guarded != originalBody) originalBody = guarded;
                 if (note != null) log?.Invoke(note);
@@ -107,7 +111,7 @@ public static class OutputContinuer
                         Content = new StringContent(originalBody, Encoding.UTF8, "application/json"),
                     };
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(cfg.ContinuationTimeoutSeconds));
-                    resp = await hc.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                    resp = await backend.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
                     round++;
                     log?.Invoke($"续接触发（第 {round} 轮）：输出截断（finish_reason=length），自动续接…");
                 }
@@ -134,7 +138,7 @@ public static class OutputContinuer
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    await Task.Delay(2000, ct);
+                    await Task.Delay(FlushDelayMs, ct);
                     // P1：心跳必须发「合法 SSE data 事件」（空 delta chunk）。
                     // 不能用 ":" 开头的注释行——DSH(deepseek-harness) 等严格 JSON 客户端无法解析注释行，
                     // 会报 "Unexpected non-whitespace character after JSON"。空 delta chunk 符合 OpenAI SSE 规范，
@@ -182,7 +186,22 @@ public static class OutputContinuer
         int scanFrom = 0;     // 下一轮扫描起点（上次扫描到的位置）
         while (true)
         {
-            int n = await stream.ReadAsync(chunk);
+            // AH-3：流式读 idle 超时看门狗——后端假死（长期无字节）时不再无限挂起。
+            // 每轮重建 CTS：读到数据即重置计时；超时抛 TimeoutException 由上层记录告警并断开（不触发自动崩溃恢复，避免误杀长思考）。
+            using var readCts = new CancellationTokenSource(BackendIdleTimeoutMs);
+            int n;
+            try
+            {
+                n = await stream.ReadAsync(chunk, readCts.Token);
+            }
+            catch (OperationCanceledException) when (!readCts.IsCancellationRequested)
+            {
+                throw; // 外部取消（非本看门狗超时），原样上抛
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException("后端流式响应空闲超时（疑似后端假死，长期无数据）。");
+            }
             if (n <= 0) break;
             if (len + n > buf.Length)
             {
@@ -202,7 +221,7 @@ public static class OutputContinuer
             }
             scanFrom = len; // 已扫到末尾，下轮从新追加的字节继续
             // 压实：已处理量超 64KB → 未处理尾部一次性搬到头部、偏移归零（避免长期运行 buf 无限增长）
-            if (lineStart > 65536)
+            if (lineStart > HeldLineMax)
             {
                 int remaining = len - lineStart;
                 Array.Copy(buf, lineStart, buf, 0, remaining);
@@ -253,7 +272,11 @@ public static class OutputContinuer
             {
                 var choice = (obj["choices"] as JsonArray)?.FirstOrDefault()?.AsObject();
                 var delta = choice?["delta"]?.AsObject();
-                var content = delta?["content"]?.GetValue<string>();
+                // AH-2：content 可为数组（多模态 [{type:...}]），GetValue<string> 抛异常会中断整条 SSE 流；类型防护 + 数组序列化累积
+                string? content = null;
+                var contentNode = delta?["content"];
+                if (contentNode is JsonValue cv && cv.TryGetValue<string>(out var s)) content = s;
+                else if (contentNode is JsonArray ca) content = ca.ToJsonString();
                 if (!string.IsNullOrEmpty(content)) state.Accumulated.Append(content);
                 if (delta?["tool_calls"] != null) state.HasToolCalls = true;
                 var fr = choice?["finish_reason"]?.GetValue<string>();
@@ -353,7 +376,7 @@ public static class OutputContinuer
     /// <summary>非流式续接：读完整 JSON 响应；finish_reason=length 时循环续接；末轮归一化 finish_reason=stop + 合并 usage。</summary>
     /// <returns>(Completed, Accumulated)：Completed=false 表示 bad_alloc 错误（恢复启用时不转发错误体，交给崩溃恢复）。</returns>
     public static async Task<(bool Completed, string Accumulated)> HandleNonStreamAsync(
-        HttpClient hc, Uri uri, int backendPort, string originalBody,
+        IBackendClient backend, Uri uri, string originalBody,
         HttpResponseMessage firstResp, HttpListenerResponse outResp,
         AppConfig cfg, Action<string>? log, bool crashRecoveryEnabled)
     {
@@ -382,7 +405,7 @@ public static class OutputContinuer
             originalBody = nextBody;
 
             int budget = cfg.GetInputBudget();
-            var (ok, guarded, note) = await TokenGuard.GuardAsync(hc, backendPort, originalBody, budget);
+            var (ok, guarded, note) = await TokenGuard.GuardAsync(backend, originalBody, budget);
             if (!ok) { log?.Invoke($"续接中止：{note}"); break; }
             if (guarded != null && guarded != originalBody) originalBody = guarded;
             if (note != null) log?.Invoke(note);
@@ -394,7 +417,7 @@ public static class OutputContinuer
                     Content = new StringContent(originalBody, Encoding.UTF8, "application/json"),
                 };
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(cfg.ContinuationTimeoutSeconds));
-                using var r2 = await hc.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                using var r2 = await backend.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
                 body = Encoding.UTF8.GetString(await r2.Content.ReadAsByteArrayAsync(cts.Token));
                 round++;
                 log?.Invoke($"续接触发（第 {round} 轮）：输出截断，自动续接…");

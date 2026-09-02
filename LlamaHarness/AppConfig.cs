@@ -74,13 +74,33 @@ public class AppConfig
     public string AutoPreemptiveApps { get; set; } = "dsh_agent_global,trae_global";
     /// <summary>自动快照 key（仅快照持久化，不锁槽）：逗号分隔前缀。key 匹配任一前缀 → 首请求存档 + Warming eager restore；不参与槽位强占/驱逐拒绝（与 AutoPreemptiveApps 解耦）。默认 trae_global。</summary>
     public string AutoSnapshotKeys { get; set; } = "trae_global";
+
+    // —— v2.23.8 未知应用自动兜底识别 ——
+    /// <summary>未知应用自动绑定（UA 稳定哈希生成独立 key unknown_{hash}，走正常槽位亲和 + KV 快照）。
+    /// 新应用接入无需手动配规则即可获得独立缓存；正式 affinity_rules 永远优先。默认开。</summary>
+    public bool UnknownAppAutoBind { get; set; } = true;
+    /// <summary>未知应用 key 是否启用 KV 快照持久化（unknown_ 前缀视为自动快照）。默认开；关闭则 unknown 键仅占槽位不存快照。</summary>
+    public bool UnknownAppKvSnapshot { get; set; } = true;
+    /// <summary>未知应用 key 数量上限（防 KV 磁盘膨胀：每个快照 ~160MB）。达到上限后新未知应用走随机槽，不建绑定不存 KV。默认 16。</summary>
+    public int UnknownAppMaxKeys { get; set; } = 16;
+
+    /// <summary>指纹识别规则（v2.16）：有序按 Priority 升序匹配，第一条命中即返回。新增业务 = 配置追加一条规则，零代码改动。默认 4 条与重构前 GetAffinityKey 逐字等价。</summary>
+    public List<AffinityRule> AffinityRules { get; set; } = DefaultAffinityRules();
     /// <summary>请求体 dump 开关（应用识别分析用）：每个 POST 的原始 body + headers 落盘 request_dump.log。默认关闭——防 prompt 隐私落盘与无谓 IO（审计 O-18）。</summary>
     public bool RequestDumpEnabled { get; set; } = false;
     /// <summary>日志管道队列满丢弃策略：DropNewest = 保留历史、丢新入队（默认——排查更看重最早异常源头）；DropOldest = 丢最旧、保留新消息。</summary>
     public QueueFullPolicy LogQueueFullPolicy { get; set; } = QueueFullPolicy.DropNewest;
 
+    // —— v2.21 性能监控配置 ——
+    /// <summary>性能监控总开关（采样器/性能日志/监控页）。</summary>
+    public bool PerfMonitoringEnabled { get; set; } = true;
+    /// <summary>采样时间序列窗口（秒）：1s 采样 × N 点。默认 3600 ≈ 1 小时。</summary>
+    public int PerfSeriesSeconds { get; set; } = 3600;
+    /// <summary>性能阈值规则（配置驱动，v2.21）：指标键/方向/警告/严重/持续秒；新增或改阈值 = 配置追加，零代码改动。</summary>
+    public List<PerfThresholdRule> PerfThresholds { get; set; } = PerfThresholdRule.Defaults();
+
     /// <summary>配置文件路径：项目目录下 config/config.json。</summary>
-    private static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "config", "config.json");
+    private static string ConfigPath => AppPaths.ConfigJson;
 
     /// <summary>审计：config.json 字段命名统一 snake_case_lower（此前仅 schema_version 为 snake，其余 PascalCase）。</summary>
     private sealed class SnakeCaseNamingPolicy : System.Text.Json.JsonNamingPolicy
@@ -106,19 +126,50 @@ public class AppConfig
     {
         WriteIndented = true,
         PropertyNamingPolicy = new SnakeCaseNamingPolicy(),
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
     };
 
     /// <summary>旧版 config.json 为 PascalCase 字段名：仅用于兼容读取；保存一律写新 snake_case 格式。</summary>
     private static readonly JsonSerializerOptions LegacyJsonOpts = new() { WriteIndented = true };
 
     /// <summary>确保 config/ 目录存在（幂等）。</summary>
-    private static void EnsureConfigDir()
+    private static void EnsureConfigDir() => AppPaths.EnsureConfigDir();
+
+    /// <summary>默认 4 条指纹规则（与重构前 GetAffinityKey 的硬编码逐字等价）：DSH 规则引擎 / WebUI / Trae Work / DSH 主 Agent。</summary>
+    public static List<AffinityRule> DefaultAffinityRules() => new()
     {
-        var dir = Path.Combine(AppContext.BaseDirectory, "config");
-        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        new() { Id = "dsh_rule", Name = "DSH 规则引擎", UiPrefix = "dsh_rule", Match = AffinityMatchType.Header, Header = "x-deepseek-harness-user-id", KeyTemplate = "dsh_rule_{value}", Priority = 1, TooltipAutoPre = "勾选后 DSH 规则引擎会话（dsh_rule_*）槽位自动强占：空闲不被 LRU 驱逐，再次提问零 Prefill 开销。", TooltipSnap = "勾选后 DSH 规则引擎会话（dsh_rule_*）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+        new() { Id = "webui", Name = "WebUI", UiPrefix = "webui", Match = AffinityMatchType.Header, Header = "X-Conversation-Id", KeyTemplate = "webui_{value}", Priority = 2, TooltipAutoPre = "勾选后 WebUI 会话（webui_*）槽位自动强占：空闲不被 LRU 驱逐。", TooltipSnap = "勾选后 WebUI 会话（webui_*）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+        new() { Id = "trae_global", Name = "Trae Work", UiPrefix = "trae_global", Match = AffinityMatchType.HeaderValue, Header = "x-model-provider", Value = "custom_openai_compatible", Key = "trae_global", Priority = 3, TooltipAutoPre = "勾选后 Trae Work（trae_global）槽位自动强占：空闲不被 LRU 驱逐。", TooltipSnap = "勾选后 Trae Work（trae_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+        new() { Id = "dsh_agent", Name = "DSH 主 Agent", UiPrefix = "dsh_agent_global", Match = AffinityMatchType.UaAndHeaderPrefix, UaContains = "deepseek-harness", HeaderPrefix = "X-Stainless-", Key = "dsh_agent_global", Priority = 4, TooltipAutoPre = "勾选后 DSH 主 Agent（dsh_agent_global）槽位自动强占：空闲不被 LRU 驱逐。注意 parallel=2 时若两槽都被强占，新会话将排队等待（上限 30s）。", TooltipSnap = "勾选后 DSH 主 Agent（dsh_agent_global）启用自动快照恢复：首请求存档 + 唤醒 eager restore；不锁槽，可被其他应用正常驱逐。" },
+    };
+
+    /// <summary>数值兜底统一入口：越界时回退黄金默认值。Load() 与配置导入共用同一套规则，避免规则漂移（修复导入路径 CtxSize 与 Load 不一致）。</summary>
+    public static void Sanitize(AppConfig cfg)
+    {
+        if (cfg.Port is < 1 or > 65534) cfg.Port = 8080; // 上限 65534：智能模式后端端口 = Port+1，65535 会与前端端口冲突
+        if (cfg.CtxSize <= 0) cfg.CtxSize = 65536;
+        if (cfg.Ngl < 0) cfg.Ngl = 999;
+        if (cfg.Parallel <= 0) cfg.Parallel = 1;
+        if (cfg.Threads <= 0) cfg.Threads = Environment.ProcessorCount;
+        if (cfg.UbatchSize <= 0) cfg.UbatchSize = 2048;
+        if (cfg.BatchSize <= 0) cfg.BatchSize = 8192;
+        if (cfg.SpecDraftNMax < 0) cfg.SpecDraftNMax = 2; // 0 = 用户显式禁用，不兜底
+        if (cfg.BatchThreads < 0) cfg.BatchThreads = 0;   // 0 = 不拼 --tb
+        if (cfg.IdleMinutes <= 0) cfg.IdleMinutes = 15;
+        if (cfg.ReservedOutputTokens <= 0) cfg.ReservedOutputTokens = 8192;
+        if (cfg.ReservedPromptOverhead < 0) cfg.ReservedPromptOverhead = 10240;
+        if (cfg.CacheRamMiB < 0) cfg.CacheRamMiB = 0;
+        if (cfg.MaxContinuations < 1) cfg.MaxContinuations = 10;
+        if (cfg.ContinuationTimeoutSeconds < 30) cfg.ContinuationTimeoutSeconds = 300;
+        if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
+        if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
+        if (cfg.PerfSeriesSeconds is < 60 or > 86400) cfg.PerfSeriesSeconds = 3600; // 性能窗口 1 分钟~24 小时
+        if (cfg.UnknownAppMaxKeys is < 1 or > 256) cfg.UnknownAppMaxKeys = 16; // 未知应用 key 上限 1~256（防 KV 磁盘膨胀）
     }
 
     /// <summary>加载配置；文件不存在返回默认值，损坏则回退默认值并通过 out 报告错误。</summary>
+
     public static AppConfig Load(out string? loadError)
     {
         loadError = null;
@@ -128,30 +179,13 @@ public class AppConfig
                 return new AppConfig();
 
             var json = File.ReadAllText(ConfigPath);
-            // 兼容：旧版 config.json 为 PascalCase 字段名（新版统一 snake_case_lower）；按字段名探测选择反序列化选项
-            var opts = json.Contains("\"ExePath\"") ? LegacyJsonOpts : JsonOpts;
+            // 兼容：旧版 config.json 为 PascalCase 字段名（新版统一 snake_case_lower）；按实际 JSON 属性探测选择反序列化选项
+            var opts = HasProperty(json, "ExePath") ? LegacyJsonOpts : JsonOpts;
             var cfg = JsonSerializer.Deserialize<AppConfig>(json, opts);
             if (cfg == null)
                 throw new InvalidOperationException("反序列化结果为空");
 
-            // 数值兜底：越界时回退黄金默认值
-            if (cfg.Port is < 1 or > 65534) cfg.Port = 8080; // 上限 65534：智能模式后端端口 = Port+1，65535 会与前端端口冲突
-            if (cfg.CtxSize <= 0) cfg.CtxSize = 65536;
-            if (cfg.Ngl < 0) cfg.Ngl = 999;
-            if (cfg.Parallel <= 0) cfg.Parallel = 1;
-            if (cfg.Threads <= 0) cfg.Threads = Environment.ProcessorCount;
-            if (cfg.UbatchSize <= 0) cfg.UbatchSize = 2048;
-            if (cfg.BatchSize <= 0) cfg.BatchSize = 8192;
-            if (cfg.SpecDraftNMax < 0) cfg.SpecDraftNMax = 2; // 0 = 用户显式禁用，不兜底
-            if (cfg.BatchThreads < 0) cfg.BatchThreads = 0;   // 0 = 不拼 --tb
-            if (cfg.IdleMinutes <= 0) cfg.IdleMinutes = 15;
-            if (cfg.ReservedOutputTokens <= 0) cfg.ReservedOutputTokens = 8192;
-            if (cfg.ReservedPromptOverhead < 0) cfg.ReservedPromptOverhead = 10240;
-            if (cfg.CacheRamMiB < 0) cfg.CacheRamMiB = 0;
-            if (cfg.MaxContinuations < 1) cfg.MaxContinuations = 10;
-            if (cfg.ContinuationTimeoutSeconds < 30) cfg.ContinuationTimeoutSeconds = 300;
-            if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
-            if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
+            Sanitize(cfg); // 数值兜底统一入口（Load/导入共用，规则集中在 Sanitize）
             return cfg;
         }
         catch (Exception ex)
@@ -159,6 +193,18 @@ public class AppConfig
             loadError = $"config.json 读取失败，已回退默认值：{ex.Message}";
             return new AppConfig();
         }
+    }
+
+    /// <summary>AH-19：JSON 根对象是否存在指定属性（替代 Contains 字符串探测，防注释/字符串内容恰好含字段名导致误判）。</summary>
+    private static bool HasProperty(string json, string name)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty(name, out _);
+        }
+        catch { return false; }
     }
 
     /// <summary>单槽输入 token 预算：上下文均摊到每槽，扣除输出预留 + Prompt 头部开销预留（tools/system/Jinja 模板隐形 token）。审计 O-9：收敛此前散落 5 处的重复公式。</summary>

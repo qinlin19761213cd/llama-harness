@@ -35,7 +35,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, result, note) = await TokenGuard.GuardAsync(null!, 0, body, 10_000, counter);
+        var (ok, result, note) = await TokenGuard.GuardAsync(null!, body, 10_000, counter);
 
         Assert.True(ok);
         Assert.Null(note);
@@ -51,7 +51,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);
         Assert.True(modified);
@@ -71,7 +71,7 @@ public class TokenGuardTrimTests
         int budget = 250;
         Func<string, Task<int?>> counter = async t => t.Length / 10;
 
-        var (ok, _, _) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, _, _) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);
         var msgs = root["messages"]!.AsArray();
@@ -98,7 +98,7 @@ public class TokenGuardTrimTests
             return calls == 1 ? t.Length / 10 : null;
         };
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);          // 降级不阻断
         Assert.False(modified);   // 未修改状态透传
@@ -118,7 +118,7 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, modified, _) = await TokenGuard.GuardAsync(root, null!, 0, budget, counter);
+        var (ok, modified, _) = await TokenGuard.GuardAsync(root, null!, budget, counter);
 
         Assert.True(ok);
         Assert.True(modified);
@@ -139,11 +139,40 @@ public class TokenGuardTrimTests
         int calls = 0;
         Func<string, Task<int?>> counter = async t => { calls++; return t.Length / 10; };
 
-        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 0, 100, counter);
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, 100, counter);
 
         Assert.True(ok);
         Assert.False(modified);
         Assert.Null(note);
         Assert.Equal(1, calls); // 只计数一次，无可裁
+    }
+
+    // ── 故障修复回归（v2.23）：tokenize 双路径回退 + fail-closed 兜底 ──
+    [Fact]
+    public async Task FailOpenFalse_TokenizeFailure_UsesCharEstimateToTrim()
+    {
+        // 400 自愈兜底场景：tokenize 持续失败（返回 null）+ failOpenOnTokenizeError=false
+        // → 不得原样穿透死循环，退化为字符级保守估算继续裁剪
+        var root = BuildRoot(6);
+        int budget = 300;
+        Func<string, Task<int?>> counter = async t => null; // 模拟 tokenize 端点 404/持续失败
+
+        var (ok, modified, note) = await TokenGuard.GuardAsync(root, null!, budget, counter, failOpenOnTokenizeError: false);
+
+        Assert.True(ok);
+        Assert.True(modified);          // 必须裁剪，禁止未裁剪穿透
+        Assert.NotNull(note);
+        var msgs = root["messages"]!.AsArray();
+        Assert.Equal("assistant", msgs[^1]!.AsObject()["role"]!.GetValue<string>()); // 最后一轮仍保留
+    }
+
+    [Fact]
+    public void EstimateTokensByChars_CjkAndAscii()
+    {
+        Assert.Equal(4, TokenGuard.EstimateTokensByChars("你好世界"));      // 4 CJK ≈ 4
+        Assert.Equal(2, TokenGuard.EstimateTokensByChars("hello world"));  // 11 非CJK /4 = 2
+        Assert.Equal(3, TokenGuard.EstimateTokensByChars("hello你好"));     // 5/4=1 + 2CJK = 3
+        Assert.Equal(1, TokenGuard.EstimateTokensByChars("a"));             // 至少 1
+        Assert.Equal(0, TokenGuard.EstimateTokensByChars(""));
     }
 }

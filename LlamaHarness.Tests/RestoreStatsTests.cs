@@ -160,4 +160,145 @@ public class RestoreStatsTests
         Assert.Equal("trae_global", snap.ByKey[0].Key);
         File.Delete(path);
     }
+    // ── v2.23.10 前缀漂移检测 ──
+    [Fact]
+    public void DriftAlert_FullPrefillChain_TriggersAfterThree()
+    {
+        // 存在快照（savedN>0）连续 3 次全量 prefill → 第 3 次触发前缀漂移告警
+        var s = new RestoreStats(TempPath());
+        for (int i = 0; i < 2; i++)
+        {
+            s.RecordRequest("trae_global", 0, wrapperHit: true, savedN: 1000);
+            var r = s.OnPromptEval(5000); // 5000>4096 且 >= 全量估计 → FullPrefill
+            Assert.False(r!.Hit);
+            Assert.Equal("FullPrefill", r.Reason);
+            Assert.False(r.DriftAlert); // 前两次不告警
+        }
+        s.RecordRequest("trae_global", 0, wrapperHit: true, savedN: 1000);
+        var r3 = s.OnPromptEval(5000);
+        Assert.False(r3!.Hit);
+        Assert.True(r3.DriftAlert); // 第 3 次告警
+        Assert.Equal(1, s.DriftAlertCount);
+    }
+
+    [Fact]
+    public void DriftAlert_HitInterruptsChain_ResetsCounting()
+    {
+        // HitByDelta（增量命中）打断全量链 → 重新计数，需再连续 3 次全量才告警
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000); // FP chain=1
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(100);  // HIT 打断 chain=0
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000); // FP chain=1
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000); // FP chain=2
+        s.RecordRequest("k", 0, true, 1000); var r = s.OnPromptEval(5000); // FP chain=3 → 告警
+        Assert.True(r!.DriftAlert);
+        // 打断后再触发一次告警（链归零后允许再次告警）
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(100);  // HIT 重置
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000);
+        s.RecordRequest("k", 0, true, 1000); s.OnPromptEval(5000);
+        s.RecordRequest("k", 0, true, 1000); var r2 = s.OnPromptEval(5000); // 再次 3 连 → 再次告警
+        Assert.True(r2!.DriftAlert);
+        Assert.Equal(2, s.DriftAlertCount);
+    }
+
+    [Fact]
+    public void DriftAlert_NoSnapshotFullPrefill_NotDrift()
+    {
+        // savedN=0（无快照/首次存档）全量 prefill 是正常行为，不算前缀漂移
+        var s = new RestoreStats(TempPath());
+        for (int i = 0; i < 3; i++)
+        {
+            s.RecordRequest("k", 0, true, savedN: 0);
+            var r = s.OnPromptEval(5000);
+            Assert.False(r!.Hit);
+            Assert.False(r.DriftAlert); // 永不告警
+        }
+        Assert.Equal(0, s.DriftAlertCount);
+    }
+
+    [Fact]
+    public void PerfSnapshot_IncludesFullPrefillCount()
+    {
+        var s = new RestoreStats(TempPath());
+        Assert.Equal(0, s.PerfSnapshot().TotalFullPrefill);
+        s.RecordRequest("k", 0, true, 1000);
+        s.OnPromptEval(5000); // 1 次全量
+        s.RecordRequest("k", 0, true, 100);
+        s.OnPromptEval(500); // 1 次命中
+        var snap = s.PerfSnapshot();
+        Assert.Equal(1, snap.TotalFullPrefill);
+        Assert.Equal(1, snap.TotalHits);
+    }
+    [Fact]
+    public void TryParsePromptEvalLine_Tps_TokensPerSecond_And_MsPerToken()
+    {
+        // v2.23.11：llama.cpp 新格式 "( 1.04 ms per token, 961.60 tokens per second)"
+        Assert.True(RestoreStats.TryParsePromptEvalLine(
+            "0.10.291.480 I slot print_timing: id  0 | task 4 | prompt eval time =  8571.15 ms / 8242 tokens ( 1.04 ms per token, 961.60 tokens per second)",
+            out var tok, out var ms, out var tps));
+        Assert.Equal(8242, tok);
+        Assert.Equal(8571.15, ms, 2);
+        Assert.Equal(961.60, tps, 2);
+        // 旧格式 "( 5.324 ms/token)" → tps = 1000/5.324
+        Assert.True(RestoreStats.TryParsePromptEvalLine(
+            "srv  prompt eval time = 123.4 ms / 656 tokens ( 5.324 ms/token)",
+            out var tok2, out _, out var tps2));
+        Assert.Equal(656, tok2);
+        Assert.Equal(1000.0 / 5.324, tps2, 2);
+        // 无吞吐段：tokens/ms 仍解析，tps=0
+        Assert.True(RestoreStats.TryParsePromptEvalLine(
+            "prompt eval time = 10.0 ms / 5 tokens", out var tok3, out var ms3, out var tps3));
+        Assert.Equal(5, tok3);
+        Assert.Equal(0, tps3);
+    }
+
+    [Fact]
+    public void Roi_HitByDelta_AccumulatesReuseTokensAndSavedMs()
+    {
+        // v2.23.11：hit 时 saved_n 即复用 token；节省时间用「全量 prefill 参考吞吐」折算
+        var s = new RestoreStats(TempPath());
+        // 先触发 FullPrefill，建立真实全量吞吐参考（8242 token / 961.6 tps）
+        s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 8267);
+        s.OnPromptEval(8242, tps: 961.6);
+        // 命中：增量仅 prefill 32 token（增量小批 tps=12.64 应被忽略，用参考 961.6 折算）
+        s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 13971);
+        var r = s.OnPromptEval(32, tps: 12.64);
+        Assert.True(r!.Hit);
+        Assert.Equal("HitByDelta", r.Reason);
+        var snap = s.PerfSnapshot();
+        Assert.Equal(13971L, snap.ReuseTokens);
+        Assert.Equal(13971 / 961.6 * 1000.0, snap.ReuseSavedMs, 1);
+        // 再次命中累计（参考 tps 不变，仍用 961.6）
+        s.RecordRequest("k_roi", 0, wrapperHit: true, savedN: 13971);
+        s.OnPromptEval(32, tps: 13.0);
+        var snap2 = s.PerfSnapshot();
+        Assert.Equal(27942L, snap2.ReuseTokens);
+        Assert.Equal(13971 / 961.6 * 1000.0 * 2, snap2.ReuseSavedMs, 1);
+    }
+
+    [Fact]
+    public void Roi_HitWithoutRefTps_AccumulatesTokensOnly()
+    {
+        // v2.23.11：尚无全量 prefill 参考吞吐时，命中只累计复用 token，节省时间暂为 0（不猜默认值）
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k", 0, wrapperHit: true, savedN: 13971);
+        var r = s.OnPromptEval(32, tps: 12.64);
+        Assert.True(r!.Hit);
+        var snap = s.PerfSnapshot();
+        Assert.Equal(13971L, snap.ReuseTokens);
+        Assert.Equal(0.0, snap.ReuseSavedMs, 1);
+    }
+
+    [Fact]
+    public void Roi_Miss_DoesNotAccumulate()
+    {
+        // v2.23.11：FullPrefill miss 不累计复用（saved_n 未真正复用）
+        var s = new RestoreStats(TempPath());
+        s.RecordRequest("k_miss", 0, wrapperHit: true, savedN: 8267);
+        var r = s.OnPromptEval(8242, tps: 961.6);
+        Assert.False(r!.Hit);
+        var snap = s.PerfSnapshot();
+        Assert.Equal(0L, snap.ReuseTokens);
+        Assert.Equal(0.0, snap.ReuseSavedMs, 1);
+    }
 }

@@ -12,7 +12,7 @@ public static class LogFile
     private static readonly object _recentGate = new();
 
     /// <summary>日志目录：项目目录下 logs/（写入器首次打开时自动创建）。</summary>
-    internal static string LogDir => Path.Combine(AppContext.BaseDirectory, "logs");
+    internal static string LogDir => AppPaths.LogDir;
 
     /// <summary>最近 N 条带时间戳日志（生产侧更新），供警告/错误块与 /__status__ recent_logs。</summary>
     private static readonly Queue<string> _recent = new();
@@ -24,6 +24,9 @@ public static class LogFile
         new(() => new LogPipeline(LogDir, QueueFullPolicy.DropNewest), true);
 
     /// <summary>设置队列满丢弃策略（运行时生效，UI 配置页）。</summary>
+    /// <summary>v2.22 可观测：日志管道性能快照（丢弃行数 / flush 平均耗时）。</summary>
+    public static (long Dropped, double FlushAvgMs) PerfSnapshot() => _pipeline.Value.PerfSnapshot();
+
     public static void Configure(QueueFullPolicy policy)
     {
         _pipeline.Value.Queue.Policy = policy;

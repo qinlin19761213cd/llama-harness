@@ -19,18 +19,18 @@ public class PrefixFingerprintAndLogFileTests
     public void SameMessages_SameFingerprint()
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""},{""role"":""user"",""content"":""c""}]}");
-        var h1 = SmartScheduler.PrefixHash(obj);
+        var h1 = RequestProcessor.PrefixHash(obj);
         Assert.NotNull(h1);
-        Assert.Equal(h1, SmartScheduler.PrefixHash(obj)); // 确定性
+        Assert.Equal(h1, RequestProcessor.PrefixHash(obj)); // 确定性
     }
 
     [Fact]
     public void ContentChange_FingerprintChanges()
     {
         var json = @"{""messages"":[{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""},{""role"":""user"",""content"":""c""}]}";
-        var h1 = SmartScheduler.PrefixHash(Parse(json));
+        var h1 = RequestProcessor.PrefixHash(Parse(json));
         // 改第一条 content（前缀范围内）→ 指纹必须变化
-        var h2 = SmartScheduler.PrefixHash(Parse(json.Replace(@"""a""", @"""aa""")));
+        var h2 = RequestProcessor.PrefixHash(Parse(json.Replace(@"""a""", @"""aa""")));
         Assert.NotEqual(h1, h2);
     }
 
@@ -39,8 +39,8 @@ public class PrefixFingerprintAndLogFileTests
     {
         // 末条消息不参与前缀指纹（最新一轮是增量部分）
         var json = @"{""messages"":[{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""}]}";
-        var h1 = SmartScheduler.PrefixHash(Parse(json));
-        var h2 = SmartScheduler.PrefixHash(Parse(json.Replace(@"""b""", @"""bb""")));
+        var h1 = RequestProcessor.PrefixHash(Parse(json));
+        var h2 = RequestProcessor.PrefixHash(Parse(json.Replace(@"""b""", @"""bb""")));
         Assert.Equal(h1, h2);
     }
 
@@ -48,13 +48,13 @@ public class PrefixFingerprintAndLogFileTests
     public void SingleMessage_ReturnsNull()
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""a""}]}");
-        Assert.Null(SmartScheduler.PrefixHash(obj)); // 无状态单轮：无比对基线
+        Assert.Null(RequestProcessor.PrefixHash(obj)); // 无状态单轮：无比对基线
     }
 
     [Fact]
     public void NoMessages_ReturnsNull()
     {
-        Assert.Null(SmartScheduler.PrefixHash(Parse(@"{""model"":""m""}")));
+        Assert.Null(RequestProcessor.PrefixHash(Parse(@"{""model"":""m""}")));
     }
 
     // ---------- 3.3 日志噪声过滤（Classify） ----------
@@ -105,5 +105,60 @@ public class PrefixFingerprintAndLogFileTests
         }
         Assert.NotNull(content);
         Assert.Contains(line, content!);
+    }
+    [Fact]
+    public void SegmentPrefixHash_DividesSystemToolsMessages()
+    {
+        // v2.23.11（P1-4）：分段指纹三段落点——system 长度 / tools 条数x长度 / messages 条数+指纹
+        const string json = @"{""messages"":[{""role"":""system"",""content"":""sys1""},{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""}],""tools"":[{""type"":""function"",""function"":{""name"":""t1""}},{""type"":""function"",""function"":{""name"":""t2""}}]}";
+        var h = RequestProcessor.SegmentPrefixHash(Parse(json));
+        Assert.NotNull(h);
+        Assert.StartsWith("S:4|T:2:", h); // system 内容 "sys1"=4 字符；tools 2 条
+        Assert.Contains("|M:3:", h);      // messages 3 条
+    }
+
+    [Fact]
+    public void DescribePrefixDrift_SystemChange_LocatesSystem()
+    {
+        const string baseJson = @"{""messages"":[{""role"":""system"",""content"":""__SYS__""},{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""}]}";
+        var h1 = RequestProcessor.SegmentPrefixHash(Parse(baseJson));
+        var h2 = RequestProcessor.SegmentPrefixHash(Parse(baseJson.Replace("__SYS__", "__SYS_SYS_SYS__")));
+        var diff = RequestProcessor.DescribePrefixDrift(h1, h2);
+        Assert.Contains("system", diff);
+        Assert.DoesNotContain("tools", diff);
+        Assert.DoesNotContain("messages", diff);
+    }
+
+    [Fact]
+    public void DescribePrefixDrift_ToolsChange_LocatesTools()
+    {
+        const string baseJson = @"{""messages"":[{""role"":""system"",""content"":""s""},{""role"":""user"",""content"":""a""}],""tools"":[{""type"":""function"",""function"":{""name"":""t1""}}]}";
+        var h1 = RequestProcessor.SegmentPrefixHash(Parse(baseJson));
+        var h2 = RequestProcessor.SegmentPrefixHash(Parse(baseJson.Replace("t1", "t1_tool"))); // tools 内容变 → 长度变
+        var diff = RequestProcessor.DescribePrefixDrift(h1, h2);
+        Assert.Contains("tools", diff);
+        Assert.DoesNotContain("system", diff);
+    }
+
+    [Fact]
+    public void DescribePrefixDrift_MessagesCountChange_LocatesMessages()
+    {
+        const string json = @"{""messages"":[{""role"":""system"",""content"":""s""},{""role"":""user"",""content"":""a""}]}";
+        const string json2 = @"{""messages"":[{""role"":""system"",""content"":""s""},{""role"":""user"",""content"":""a""},{""role"":""assistant"",""content"":""b""}]}";
+        var h1 = RequestProcessor.SegmentPrefixHash(Parse(json));
+        var h2 = RequestProcessor.SegmentPrefixHash(Parse(json2));
+        var diff = RequestProcessor.DescribePrefixDrift(h1, h2);
+        Assert.Contains("messages", diff);
+        Assert.Contains("2条→3条", diff);
+    }
+
+    [Fact]
+    public void DescribePrefixDrift_NoChange_ReturnsNull()
+    {
+        const string json = @"{""messages"":[{""role"":""system"",""content"":""s""},{""role"":""user"",""content"":""a""}]}";
+        var h1 = RequestProcessor.SegmentPrefixHash(Parse(json));
+        Assert.Null(RequestProcessor.DescribePrefixDrift(h1, h1));
+        Assert.Null(RequestProcessor.DescribePrefixDrift(null, h1));
+        Assert.Null(RequestProcessor.DescribePrefixDrift(h1, null));
     }
 }

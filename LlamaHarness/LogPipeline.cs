@@ -188,6 +188,12 @@ public sealed class LogPipeline : IDisposable
 {
     public const int DefaultQueueCapacity = 50_000;
 
+    // v2.22 可观测：日志管道累积指标（写线程更新 + _perfGate 保护，PerfSnapshot 供采样器读）
+    private long _totalDropped;
+    private long _flushCount;
+    private double _flushSumMs;
+    private readonly object _perfGate = new();
+
     /// <summary>四流大小上限（字节）：main/slot/dump 2MB、warn 5MB，各自独立轮切互不干扰。</summary>
     private const long MaxMainBytes = 2_000_000;
     private const long MaxWarnBytes = 5_000_000;
@@ -196,6 +202,8 @@ public sealed class LogPipeline : IDisposable
 
     /// <summary>warn_error 块附带的前置 main 日志条数（写线程侧环形缓冲，语义 = "该条之前 10 条"）。</summary>
     private const int WarnContextLines = 10;
+    private const int MaxDrainPerTick = 8192;
+    private const int BatchCapacity = 512;
 
     private readonly BoundedLineQueue _queue;
     private readonly Thread _writerThread;
@@ -217,19 +225,31 @@ public sealed class LogPipeline : IDisposable
     public long IoFailCount => Interlocked.Read(ref _ioFailCount);
 
     /// <summary>当前队列积压行数。</summary>
+    /// <summary>v2.22 可观测：日志管道累积指标快照（丢弃总行数 / flush 平均耗时 ms）。</summary>
+    public (long Dropped, double FlushAvgMs) PerfSnapshot()
+    {
+        lock (_perfGate)
+            return (_totalDropped, _flushCount > 0 ? _flushSumMs / _flushCount : 0);
+    }
+
     public int QueueCount => _queue.Count;
 
     /// <summary>有界队列（public 供测试与运行时切换 policy）。</summary>
     public BoundedLineQueue Queue => _queue;
 
+    private const string MainLogFile = "harness.log";
+    private const string WarnLogFile = "warn_error.log";
+    private const string SlotLogFile = "slot.log";
+    private const string DumpLogFile = "request_dump.log";
+
     public LogPipeline(string logDir, QueueFullPolicy policy, int joinTimeoutMs = 3000)
     {
         _joinTimeoutMs = joinTimeoutMs;
         _queue = new BoundedLineQueue(DefaultQueueCapacity) { Policy = policy };
-        _mainWriter = new LogStreamWriter(Path.Combine(logDir, "harness.log"));
-        _warnWriter = new LogStreamWriter(Path.Combine(logDir, "warn_error.log"));
-        _slotWriter = new LogStreamWriter(Path.Combine(logDir, "slot.log"));
-        _dumpWriter = new LogStreamWriter(Path.Combine(logDir, "request_dump.log"));
+        _mainWriter = new LogStreamWriter(Path.Combine(logDir, MainLogFile));
+        _warnWriter = new LogStreamWriter(Path.Combine(logDir, WarnLogFile));
+        _slotWriter = new LogStreamWriter(Path.Combine(logDir, SlotLogFile));
+        _dumpWriter = new LogStreamWriter(Path.Combine(logDir, DumpLogFile));
         _writerThread = new Thread(WriterLoop) { IsBackground = true, Name = "LogPipeline-Writer" };
         _writerThread.Start();
         // [LOG-PIPE] 启动埋点（约束 C-4：组件启用状态）
@@ -256,12 +276,12 @@ public sealed class LogPipeline : IDisposable
     /// <summary>写线程主循环：等数据信号或 150ms tick → 批量出队处理 → Flush 判定 → shutdown drain 退出。</summary>
     private void WriterLoop()
     {
-        var batch = new List<LogMessage>(512);
+        var batch = new List<LogMessage>(BatchCapacity);
         while (true)
         {
             _wake.Wait(FlushPolicy.IntervalMs); // 数据信号（auto-reset）或超时 tick
             int total = 0;
-            while (_queue.Drain(batch, 512) > 0 && total < 8192)
+            while (_queue.Drain(batch, BatchCapacity) > 0 && total < MaxDrainPerTick)
             {
                 ProcessBatch(batch);
                 total += batch.Count;
@@ -279,7 +299,10 @@ public sealed class LogPipeline : IDisposable
         // [LOG-PIPE] 丢弃埋点（直接写 main，不经队列防递归）
         var dropped = _queue.TakeDroppedDelta();
         if (dropped > 0)
+        {
+            lock (_perfGate) _totalDropped += dropped; // v2.22 可观测
             WriteDirectSafe($"[LOG-PIPE] dropped={dropped} policy={_queue.Policy}{Environment.NewLine}");
+        }
 
         // Flush 双阈值判定（四流一起刷，与旧 150ms 定时器同节奏）
         var elapsedMs = (long)(DateTime.UtcNow - _lastFlushUtc).TotalMilliseconds;
@@ -288,10 +311,12 @@ public sealed class LogPipeline : IDisposable
             Math.Max(_slotWriter.PendingBytes, _dumpWriter.PendingBytes));
         if (FlushPolicy.ShouldFlush(elapsedMs, maxPending))
         {
+            var fsw = System.Diagnostics.Stopwatch.StartNew(); // v2.22 可观测：flush 单次耗时
             _mainWriter.Flush();
             _warnWriter.Flush();
             _slotWriter.Flush();
             _dumpWriter.Flush();
+            lock (_perfGate) { _flushCount++; _flushSumMs += fsw.Elapsed.TotalMilliseconds; }
             _lastFlushUtc = DateTime.UtcNow;
         }
     }

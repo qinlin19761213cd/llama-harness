@@ -1,0 +1,9 @@
+fix(v2.23.11): 条件式 save 缺陷——restore 命中标记"新鲜"导致长全量 prefill 快照永不落盘
+
+- 实测发现：Gateway restore 命中时标记 _freshSnapshotKeys 新鲜（原意图"避免冗余重存"），
+  但条件式后台 save 只在"非新鲜"触发 → restore 命中的 key 每轮都被标新鲜 → save 永不触发，
+  磁盘快照停留在首请求存档值（实测 dsh_agent_global saved_n 卡在 39，长全量 prefill 2940/3328 token 后不落盘）
+- 语义错误：restore 时磁盘快照本就滞后于 RAM（restore 的是旧版本），标记"新鲜"错误
+- 修复：移除 restore 命中标记新鲜；本轮完成后由条件式后台 save 落盘最新 KV
+  （后台异步不阻塞、_inflightSaves 按 key 去重、RAMDisk 快照 2s 级开销可接受）
+- 影响：磁盘快照始终覆盖最新 KV → 漂移检测可建立大快照基线、崩溃恢复数据更完整

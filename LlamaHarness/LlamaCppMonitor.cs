@@ -84,16 +84,13 @@ public class LlamaGlobalProps
 /// </summary>
 public class LlamaCppMonitorCollector
 {
-    private readonly HttpClient _httpClient;
+    private const int ProbeTimeoutSeconds = 8;
+    private readonly IBackendClient _backend; // v2.26：收敛到 LlamaServerClient（HttpClient 唯一化），探测超时由 cts 控制
 
     public LlamaCppMonitorCollector(string baseAddress)
     {
-        var uri = baseAddress.TrimEnd('/');
-        _httpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(8),
-            BaseAddress = new Uri(uri),
-        };
+        _backend = new LlamaServerClient(baseAddress); // 端口可变场景：Monitor 独立持有后端客户端，调用方零改动
+
     }
 
     /// <summary>
@@ -105,20 +102,24 @@ public class LlamaCppMonitorCollector
     {
         var snapshot = new LlamaCppMonitorSnapshot { CaptureAt = DateTime.Now };
 
-        // 三个接口并行请求（各自独立容错）
-        var slotsTask = FetchAsync("/slots", ct);
-        var propsTask = FetchAsync("/props", ct);
-        var metricsTask = FetchAsync("/metrics", ct);
+        // 探测超时：对齐原 HttpClient.Timeout=8s（后端不可用时不阻塞 UI/采样循环）
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(ProbeTimeoutSeconds));
 
+        // 三个接口并行请求（各自独立容错，GetRawText 保留原始 JSON 文本）
+        var slotsTask = _backend.GetSlotsAsync(timeoutCts.Token);
+        var propsTask = _backend.GetPropsAsync(timeoutCts.Token);
+        var metricsTask = _backend.GetMetricsAsync(timeoutCts.Token);
         await Task.WhenAll(slotsTask, propsTask, metricsTask);
 
         // /slots：解析为槽位列表
-        if (!string.IsNullOrEmpty(slotsTask.Result))
+        using var slotsDoc = await slotsTask;
+        if (slotsDoc != null)
         {
-            snapshot.RawSlotsJson = slotsTask.Result;
+            snapshot.RawSlotsJson = slotsDoc.RootElement.GetRawText();
             try
             {
-                snapshot.Slots = JsonSerializer.Deserialize<List<LlamaSlotInfo>>(snapshot.RawSlotsJson) ?? new List<LlamaSlotInfo>();
+                snapshot.Slots = JsonSerializer.Deserialize<List<LlamaSlotInfo>>(snapshot.RawSlotsJson) ?? new();
             }
             catch
             {
@@ -127,15 +128,15 @@ public class LlamaCppMonitorCollector
         }
 
         // /props：解析为全局配置 + 遍历全部字段
-        if (!string.IsNullOrEmpty(propsTask.Result))
+        using var propsDoc = await propsTask;
+        if (propsDoc != null)
         {
-            snapshot.RawPropsJson = propsTask.Result;
+            snapshot.RawPropsJson = propsDoc.RootElement.GetRawText();
             try
             {
-                snapshot.GlobalProps = JsonSerializer.Deserialize<LlamaGlobalProps>(snapshot.RawPropsJson) ?? new LlamaGlobalProps();
+                snapshot.GlobalProps = JsonSerializer.Deserialize<LlamaGlobalProps>(snapshot.RawPropsJson) ?? new();
                 // 递归展开原始 JSON 所有字段（含嵌套），存入 RawFields（key.path → value）
-                using var doc = JsonDocument.Parse(snapshot.RawPropsJson);
-                FlattenJson(doc.RootElement, "", snapshot.GlobalProps.RawFields);
+                FlattenJson(propsDoc.RootElement, "", snapshot.GlobalProps.RawFields);
             }
             catch
             {
@@ -144,29 +145,11 @@ public class LlamaCppMonitorCollector
         }
 
         // /metrics：Prometheus 文本格式，直接保留原文
-        if (!string.IsNullOrEmpty(metricsTask.Result))
-        {
-            snapshot.RawMetricsText = metricsTask.Result;
-        }
+        snapshot.RawMetricsText = await metricsTask ?? "";
 
         return snapshot;
     }
 
-    /// <summary>请求单个接口；失败（超时/404/连接拒绝）返回 null，不抛异常。</summary>
-    private async Task<string?> FetchAsync(string path, CancellationToken ct)
-    {
-        try
-        {
-            var resp = await _httpClient.GetAsync(path, ct);
-            if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadAsStringAsync(ct);
-        }
-        catch
-        {
-            // 连接失败/超时/取消——返回 null，调用方按"该接口不可用"处理
-            return null;
-        }
-    }
 
     /// <summary>递归展开 JSON 对象为扁平 key.path → value 字典（嵌套对象/数组用 . 连接）。</summary>
     private static void FlattenJson(JsonElement element, string prefix, Dictionary<string, string> result)
@@ -206,5 +189,5 @@ public class LlamaCppMonitorCollector
     }
 
     /// <summary>释放 HttpClient 资源。</summary>
-    public void Dispose() => _httpClient.Dispose();
+    public void Dispose() => _backend.Dispose();
 }

@@ -34,3 +34,6 @@ parse_sse.ps1
 
 # 临时视图
 views/
+
+# 用户独立 demo 项目，不纳入本仓库
+react-demo/

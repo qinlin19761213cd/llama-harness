@@ -14,13 +14,17 @@ namespace LlamaHarness;
 /// </summary>
 public sealed class SlotAffinity
 {
+    private const int MaxWaitSecondsDefault = 30;
+    private const int PollIntervalMs = 1000;
+    private const int StaleBindingDays = 30;
+    private readonly IReadOnlyList<AffinityRule> _rules;
     private readonly int _slotCount;
     private readonly object _gate = new();
     private readonly Dictionary<string, Binding> _bindings = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>绑定表持久化文件（exe 同目录）。</summary>
     /// <summary>槽位绑定持久化路径：项目目录下 config/slot_bindings.json。</summary>
-    private static readonly string BindingsPath = Path.Combine(AppContext.BaseDirectory, "config", "slot_bindings.json");
+    private static readonly string BindingsPath = AppPaths.SlotBindingsJson;
 
     internal struct Binding
     {
@@ -36,56 +40,93 @@ public sealed class SlotAffinity
     /// <summary>Tool 链锁定集合（§4.5）：本层执行过 SetPreemptive(true) 的 key。
     /// 驱逐优先级：Tool 链锁定 > 手动/自动强占（Tool 是瞬态的，循环结束自动解锁）。</summary>
     private readonly HashSet<string> _toolLockedKeys = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>AH-7：未知请求轮转分配计数器（Interlocked 原子递增，替代 Random——并发下每个未知请求分到不同槽，避免同槽碰撞）。</summary>
+    private int _nextRandomSlot;
+    private int _evictCount;    // v2.22 可观测：驱逐事件累计次数
+    private int _preemptCount;  // v2.22 可观测：强占触发累计次数
 
-    public SlotAffinity(int slotCount, int maxWaitSeconds = 30)
+    /// <summary>v2.22 可观测：性能事件通道（槽选择耗时 / 驱逐 / 强占）。由宿主（SmartScheduler）注入；null = 不采集。</summary>
+    public PerfEventTracker? PerfEvents { get; set; }
+
+    /// <summary>v2.23.8 未知应用自动兜底事件（宿主打 [AUTO-BIND] 日志用）：参数 (key, UA 摘要)。
+    /// key != null = 新 unknown 键已自动绑定；key == null = 已达 unknown 上限，拒绝新建绑定（走随机槽）。</summary>
+    public Action<string?, string>? UnknownBindEvent { get; set; }
+
+    private readonly bool _unknownAutoBind;
+    private readonly int _maxUnknownKeys;
+    private bool _unknownLimitNotified; // 达上限告警限频（首次触发一次，新建成功重置）
+
+    public SlotAffinity(int slotCount, int maxWaitSeconds = MaxWaitSecondsDefault, IReadOnlyList<AffinityRule>? rules = null,
+        bool unknownAutoBind = false, int maxUnknownKeys = 16)
     {
         _slotCount = Math.Max(1, slotCount);
         _maxWaitSeconds = Math.Max(1, maxWaitSeconds);
+        _rules = rules ?? AppConfig.DefaultAffinityRules();
+        _unknownAutoBind = unknownAutoBind;
+        _maxUnknownKeys = Math.Max(1, maxUnknownKeys);
         Load();
-        // 启动时强制：从持久化恢复后裁剪超额强占（防旧实现遗留全槽强占死锁）
         EnforcePreemptiveCap();
+    }
+
+    /// <summary>v2.22 可观测：调度累积型计数快照（驱逐 / 强占）。</summary>
+    public (int Evict, int Preempt) PerfSnapshot()
+    {
+        lock (_gate) return (_evictCount, _preemptCount);
     }
 
     /// <summary>槽位数。</summary>
     public int SlotCount => _slotCount;
 
-    /// <summary>指纹识别：返回亲和 Key；null = 未知请求（不建立绑定）。</summary>
-    public static string? GetAffinityKey(NameValueCollection h)
+    /// <summary>指纹识别：按配置规则（affinity_rules）识别业务返回亲和 Key；null = 未知请求（不建立绑定）。
+    /// 规则有序按 Priority 匹配，新增业务 = 配置追加规则，零代码改动（v2.16 替代原硬编码 4 组 if）。</summary>
+    public string? GetAffinityKey(NameValueCollection h)
     {
-        // 优先级1：DSH 规则引擎（用户级永久绑定，最精准）
-        if (TryGetHeader(h, "x-deepseek-harness-user-id", out var uid) && !string.IsNullOrEmpty(uid))
-            return $"dsh_rule_{uid}";
+        var key = AffinityRuleMatcher.Match(h, _rules);
+        if (!string.IsNullOrEmpty(key)) return key; // 正式规则命中（永远优先于未知兜底）
 
-        // 优先级2：WebUI（会话级绑定）
-        if (TryGetHeader(h, "X-Conversation-Id", out var cid) && !string.IsNullOrEmpty(cid))
-            return $"webui_{cid}";
-
-        // 优先级3：Trae Work（独家特征头）
-        if (TryGetHeader(h, "x-model-provider", out var mp) && string.Equals(mp, "custom_openai_compatible", StringComparison.OrdinalIgnoreCase))
-            return "trae_global";
-
-        // 优先级4：DSH 主 Agent（UA + X-Stainless 系列头）
-        var ua = TryGetHeader(h, "User-Agent", out var uaVal) ? uaVal : "";
-        bool hasStainless = false;
-        foreach (var k in h.AllKeys)
+        // v2.23.8 未知应用自动兜底：正式规则全不命中 → UA 稳定哈希生成 unknown_{hash}，走正常绑定/KV
+        if (!_unknownAutoBind) return null;
+        int unknownCount;
+        lock (_gate) unknownCount = _bindings.Keys.Count(k => k.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase));
+        var ua = h["User-Agent"] ?? "";
+        if (unknownCount >= _maxUnknownKeys)
         {
-            if (k != null && k.StartsWith("X-Stainless-", StringComparison.OrdinalIgnoreCase)) { hasStainless = true; break; }
+            // 达上限告警限频：仅首次触发（防止健康检查/浏览器请求刷屏）；新建 unknown 绑定成功后重置
+            if (!string.IsNullOrEmpty(ua) && !_unknownLimitNotified)
+            {
+                _unknownLimitNotified = true;
+                UnknownBindEvent?.Invoke(null, Truncate(ua, 80));
+            }
+            return null;
         }
-        if (ua.Contains("deepseek-harness", StringComparison.OrdinalIgnoreCase) && hasStainless)
-            return "dsh_agent_global";
-
-        return null; // 未知请求 → 轮询，不绑定
+        return AffinityRuleMatcher.TryAutoBindUnknown(h, _maxUnknownKeys, unknownCount);
     }
 
-    /// <summary>根据亲和 Key 前缀派生应用显示名。</summary>
-    public static string AppNameOf(string key)
+    /// <summary>截断长 UA 供日志展示（AUTO-BIND 埋点防日志爆炸）。</summary>
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
+
+    /// <summary>v2.23.8 P2：仅真正新建 unknown 绑定时触发 [AUTO-BIND] 事件
+    /// （/v1/models 健康检查、浏览器访问等非推理请求只生成 key 不建绑定 → 不触发，消除日志刷屏）。
+    /// 调用点位于 NewBinding 成功分支（阶段 1 锁内 / 阶段 2 锁内）。</summary>
+    private void NotifyUnknownBindIfNew(string key, NameValueCollection headers)
     {
-        if (key.StartsWith("trae_")) return "Trae Work";
-        if (key.StartsWith("webui_")) return "WebUI";
-        if (key.StartsWith("dsh_rule_")) return "DSH 规则引擎";
-        if (key.StartsWith("dsh_agent_")) return "DSH 主 Agent";
-        return "未知应用";
+        if (!key.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)) return;
+        _unknownLimitNotified = false; // 新建成功 → 绑定数回落，允许后续再次达上限告警
+        var ua = headers["User-Agent"] ?? "";
+        if (!string.IsNullOrEmpty(ua)) UnknownBindEvent?.Invoke(key, Truncate(ua, 80));
     }
+
+    /// <summary>当前已绑定的未知应用 key 数（unknown_ 前缀，v2.23.8 可观测/上限日志用）。</summary>
+    public int UnknownKeyCount()
+    {
+        lock (_gate) return _bindings.Keys.Count(k => k.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>按配置规则（affinity_rules）派生应用显示名。</summary>
+    public string AppNameOf(string key) => AffinityRuleMatcher.AppNameOf(key, _rules);
+
+    /// <summary>AH-7：轮转分配下一个槽位（Interlocked 原子，线程安全；并发下分配唯一槽，杜绝 Random 同槽碰撞）。</summary>
+    private int NextRoundRobinSlot() => (int)((uint)Interlocked.Increment(ref _nextRandomSlot) % (uint)_slotCount);
 
     /// <summary>
     /// 获取请求的槽位：已绑定 → 其槽位（刷新活跃时间）；新 Key → 空闲槽或 LRU 驱逐。
@@ -98,9 +139,19 @@ public sealed class SlotAffinity
     public (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache) GetSlot(
         NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null)
     {
+        // v2.22 可观测：槽路由选择耗时（从进入排队到分配完成，含排队等待）
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = GetSlotCore(headers, autoPreemptive);
+        PerfEvents?.Record(new PerfEvent("sched", "slot_select", sw.Elapsed.TotalMilliseconds, r.Key));
+        return r;
+    }
+
+    private (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache) GetSlotCore(
+        NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null)
+    {
         var key = GetAffinityKey(headers);
         if (string.IsNullOrEmpty(key))
-            return (Random.Shared.Next(_slotCount), null, false, null, -1, false);
+            return (NextRoundRobinSlot(), null, false, null, -1, false);
 
         // §4.2：应用类型在自动强占集合 → 强制冻结（新绑定创建时 + 已有绑定每次访问）
         bool autoPre = autoPreemptive != null && autoPreemptive.Any(p => !string.IsNullOrEmpty(p) && key.StartsWith(p, StringComparison.OrdinalIgnoreCase));
@@ -125,7 +176,10 @@ public sealed class SlotAffinity
 
             var alloc = TryAllocateLocked(key, autoPre);
             if (alloc.Slot != null)
+            {
+                NotifyUnknownBindIfNew(key, headers); // v2.23.8 P2：新建 unknown 绑定 → [AUTO-BIND]
                 return (alloc.Slot!.Value, key, true, alloc.Evicted, alloc.EvictedSlot, alloc.EvictedKvCache);
+            }
             // 全被强占占满 → 锁外排队（E-5）
         }
 
@@ -133,17 +187,20 @@ public sealed class SlotAffinity
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (sw.Elapsed.TotalSeconds < _maxWaitSeconds)
         {
-            Thread.Sleep(1000);
+            Thread.Sleep(PollIntervalMs);
             lock (_gate)
             {
                 var alloc = TryAllocateLocked(key, autoPre);
                 if (alloc.Slot != null)
+                {
+                    NotifyUnknownBindIfNew(key, headers); // v2.23.8 P2：新建 unknown 绑定 → [AUTO-BIND]
                     return (alloc.Slot!.Value, key, true, alloc.Evicted, alloc.EvictedSlot, alloc.EvictedKvCache);
+                }
             }
         }
 
-        // 超时降级：随机槽，不建绑定
-        return (Random.Shared.Next(_slotCount), null, false, null, -1, false);
+        // 超时降级：轮转槽，不建绑定（AH-7：与未知请求一致用轮转，避免 Random 同槽碰撞）
+        return (NextRoundRobinSlot(), null, false, null, -1, false);
     }
 
     /// <summary>锁内原子分配：空闲槽 → LRU 驱逐非强占 → 建绑定 + 持久化。
@@ -168,6 +225,7 @@ public sealed class SlotAffinity
                 evictedSlot = slot.Value;
                 evictedKvCache = _bindings[lruKey].KvCache;
                 _bindings.Remove(lruKey);
+                _evictCount++; // v2.22 可观测：LRU 驱逐计数
                 evicted = lruKey;
             }
             else
@@ -182,6 +240,7 @@ public sealed class SlotAffinity
                         evictedSlot = slot.Value;
                         evictedKvCache = _bindings[victim].KvCache;
                         _bindings.Remove(victim);
+                        _evictCount++; // v2.22 可观测：强占驱逐计数
                         evicted = victim;
                     }
                     else
@@ -205,6 +264,7 @@ public sealed class SlotAffinity
             if (preemptiveCount >= cap)
                 finalPre = false; // cap 已满：放弃强占，走 LRU 驱逐
         }
+        if (finalPre) _preemptCount++; // v2.22 可观测：强占触发计数（新绑定成功冻结槽位）
         _bindings[key] = new Binding { Slot = slot!.Value, LastActive = DateTime.Now, Preemptive = finalPre, KvCache = true };
         Save();
         return (slot.Value, evicted, evictedSlot, evictedKvCache);
@@ -298,6 +358,11 @@ public sealed class SlotAffinity
         }
     }
 
+    /// <summary>是否应跳过 Tool 链会话锁定（§4.5）：单槽位（parallel=1，cap=slotCount-1=0）时返回 true。
+    /// 单槽位无多槽驱逐竞争，Tool 链锁定 SetPreemptive(true) 会独占唯一槽位，违反"至少 1 槽给非强占新任务"
+    /// 不变量，其他 key 任务最长排队 30s（v2.23.7 修复依据）。多槽位返回 false（保留锁定保护）。</summary>
+    public bool ShouldSkipToolLoopLock() => _slotCount <= 1;
+
     /// <summary>设置指定 Key 的 KV Cache 开关（UI 调用）。</summary>
     public void SetKvCache(string key, bool value)
     {
@@ -346,7 +411,7 @@ public sealed class SlotAffinity
                 bool preemptive = v?["preemptive"]?.GetValue<bool>() ?? false;
                 bool kvCache = v?["kvCache"]?.GetValue<bool>() ?? true;
                 if (slot < 0 || slot >= _slotCount) continue; // --parallel 缩减：丢弃越界绑定
-                if (!DateTime.TryParse(lastActive, out var dt)) dt = DateTime.Now.AddDays(-30);
+                if (!DateTime.TryParse(lastActive, out var dt)) dt = DateTime.Now.AddDays(-StaleBindingDays);
                 _bindings[kv.Key] = new Binding { Slot = slot, LastActive = dt, Preemptive = preemptive, KvCache = kvCache };
             }
         }
@@ -356,19 +421,12 @@ public sealed class SlotAffinity
         }
     }
 
-    /// <summary>持久化绑定表（含应用名/强占/KV缓存配置）。</summary>
-    /// <summary>确保 config/ 目录存在（幂等）。</summary>
-    private static void EnsureConfigDir()
-    {
-        var dir = Path.Combine(AppContext.BaseDirectory, "config");
-        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-    }
-
+    /// <summary>持久化绑定表（含应用名/强占/KV缓存配置）。AH-8：原子写（tmp + move），中断不产生半写文件。</summary>
     private void Save()
     {
         try
         {
-            EnsureConfigDir();
+            AppPaths.EnsureConfigDir();
             var bindings = new System.Text.Json.Nodes.JsonObject();
             foreach (var kv in _bindings)
             {
@@ -386,7 +444,9 @@ public sealed class SlotAffinity
                 ["slotCount"] = _slotCount,
                 ["bindings"] = bindings
             };
-            File.WriteAllText(BindingsPath, obj.ToJsonString());
+            var tmp = BindingsPath + ".tmp";
+            File.WriteAllText(tmp, obj.ToJsonString());
+            File.Move(tmp, BindingsPath, overwrite: true);
         }
         catch
         {

@@ -19,14 +19,14 @@ public class GatewayRewriteBaselineTests
     public void EnsureStreamTrue_Dom_SetsStreamTrue()
     {
         var obj = Parse(@"{""model"":""m"",""stream"":false}");
-        SmartScheduler.EnsureStreamTrue(obj);
+        RequestProcessor.EnsureStreamTrue(obj);
         Assert.True(obj["stream"]!.GetValue<bool>());
     }
 
     [Fact]
     public void EnsureStreamTrue_StringFallback_FalseToTrue()
     {
-        var result = SmartScheduler.EnsureStreamTrue(@"{""model"":""m"",""stream"":false,""messages"":[]}");
+        var result = RequestProcessor.EnsureStreamTrue(@"{""model"":""m"",""stream"":false,""messages"":[]}");
         Assert.NotNull(result);
         Assert.True(Parse(result!)["stream"]!.GetValue<bool>());
     }
@@ -34,7 +34,7 @@ public class GatewayRewriteBaselineTests
     [Fact]
     public void EnsureStreamTrue_StringFallback_NoFieldInjects()
     {
-        var result = SmartScheduler.EnsureStreamTrue(@"{""model"":""m""}");
+        var result = RequestProcessor.EnsureStreamTrue(@"{""model"":""m""}");
         Assert.NotNull(result);
         Assert.True(Parse(result!)["stream"]!.GetValue<bool>());
     }
@@ -45,7 +45,7 @@ public class GatewayRewriteBaselineTests
     public void InjectNSlots_AddsWhenMissing()
     {
         var obj = Parse(@"{""messages"":[]}");
-        Assert.True(SmartScheduler.InjectNSlots(obj, 3));
+        Assert.True(ThinkingMode.InjectNSlots(obj, 3));
         Assert.Equal(3, obj["n_slots"]![0].AsValue().GetValue<int>());
     }
 
@@ -53,7 +53,7 @@ public class GatewayRewriteBaselineTests
     public void InjectNSlots_RespectsExistingClientValue()
     {
         var obj = Parse(@"{""n_slots"":[1],""messages"":[]}");
-        Assert.False(SmartScheduler.InjectNSlots(obj, 3)); // 已有 n_slots：不覆盖
+        Assert.False(ThinkingMode.InjectNSlots(obj, 3)); // 已有 n_slots：不覆盖
         Assert.Equal(1, obj["n_slots"]![0].AsValue().GetValue<int>());
     }
 
@@ -64,7 +64,7 @@ public class GatewayRewriteBaselineTests
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""hello""}]}");
         var level = SmartScheduler.ThinkingLevel.Off;
-        SmartScheduler.InjectThinkingMode(obj, ref level, out _);
+        ThinkingMode.InjectThinkingMode(obj, ref level, out _);
         var ctk = obj["chat_template_kwargs"]!.AsObject();
         Assert.False(ctk["enable_thinking"]!.GetValue<bool>());
     }
@@ -74,7 +74,7 @@ public class GatewayRewriteBaselineTests
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""请帮我开启思考模式并分析这个问题""}]}");
         var level = SmartScheduler.ThinkingLevel.Off;
-        SmartScheduler.InjectThinkingMode(obj, ref level, out _);
+        ThinkingMode.InjectThinkingMode(obj, ref level, out _);
         Assert.Equal(SmartScheduler.ThinkingLevel.XHigh, level);
         var content = obj["messages"]![0]!.AsObject()["content"]!.GetValue<string>();
         Assert.DoesNotContain("开启思考模式", content);
@@ -88,7 +88,7 @@ public class GatewayRewriteBaselineTests
     {
         var obj = Parse(@"{""reasoning_effort"":""high"",""messages"":[{""role"":""user"",""content"":""hi""}]}");
         var level = SmartScheduler.ThinkingLevel.Off;
-        SmartScheduler.InjectThinkingMode(obj, ref level, out string? fix);
+        ThinkingMode.InjectThinkingMode(obj, ref level, out string? fix);
         Assert.Null(obj["reasoning_effort"]); // 客户端自带字段被清洗
         Assert.NotNull(fix);                    // 有清洗说明
     }
@@ -99,7 +99,7 @@ public class GatewayRewriteBaselineTests
         // 数组型 content（多模态）：不识别指令、不改写
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""text"",""text"":""开启思考模式""}]}]}");
         var level = SmartScheduler.ThinkingLevel.Off;
-        SmartScheduler.InjectThinkingMode(obj, ref level, out _);
+        ThinkingMode.InjectThinkingMode(obj, ref level, out _);
         Assert.Equal(SmartScheduler.ThinkingLevel.Off, level); // 未切换
     }
 
@@ -109,7 +109,7 @@ public class GatewayRewriteBaselineTests
     public void DetectToolLoop_LastMessageRoleTool_ReturnsTrue()
     {
         var obj = Parse(@"{""messages"":[{""role"":""user"",""content"":""q""},{""role"":""tool"",""content"":""r""}]}");
-        Assert.True(SmartScheduler.DetectToolLoop(obj));
+        Assert.True(RequestProcessor.DetectToolLoop(obj));
     }
 
     [Fact]
@@ -117,12 +117,12 @@ public class GatewayRewriteBaselineTests
     {
         // 历史残留 tool 消息不作为依据（防循环结束后永久误锁）
         var obj = Parse(@"{""messages"":[{""role"":""tool"",""content"":""r""},{""role"":""assistant"",""content"":""a""}]}");
-        Assert.False(SmartScheduler.DetectToolLoop(obj));
+        Assert.False(RequestProcessor.DetectToolLoop(obj));
     }
 
     [Fact]
     public void DetectToolLoop_NoMessages_ReturnsFalse()
     {
-        Assert.False(SmartScheduler.DetectToolLoop(Parse(@"{""model"":""m""}")));
+        Assert.False(RequestProcessor.DetectToolLoop(Parse(@"{""model"":""m""}")));
     }
 }
