@@ -91,7 +91,8 @@ public partial class SmartScheduler
         try
         {
             using var msg = build();
-            resp = await Backend.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(_cfg.BackendRequestTimeoutSeconds)); // AH-22：转发等响应头超时兜底（单槽排队/调度异常不无限挂起，默认 300s 可配）
+            resp = await Backend.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, cts.Token);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or System.Net.Sockets.SocketException)
         {
@@ -102,7 +103,8 @@ public partial class SmartScheduler
             Log?.Invoke("转发连接异常，正在重试…");
             await Task.Delay(ReconnectDelayMs);
             using var retryMsg = build();
-            resp = await Backend.SendAsync(retryMsg, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
+            using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(_cfg.BackendRequestTimeoutSeconds));
+            resp = await Backend.SendAsync(retryMsg, HttpCompletionOption.ResponseHeadersRead, retryCts.Token);
         }
         return resp;
     }

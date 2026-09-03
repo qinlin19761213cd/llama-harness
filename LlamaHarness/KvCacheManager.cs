@@ -21,6 +21,8 @@ public sealed class KvCacheManager
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly Dictionary<string, Task> _inflightSaves = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>per-slot save/restore 串行闸（AH-23：同一槽位并发 /slots/save 会干扰 llama-server 槽位状态机，串行化消除竞争）。</summary>
+    private readonly SemaphoreSlim[] _slotSems;
 
     /// <summary>缓存索引持久化文件（exe 同目录）。</summary>
     /// <summary>KV Cache 索引路径：项目目录下 config/kv_cache_index.json。</summary>
@@ -43,6 +45,8 @@ public sealed class KvCacheManager
         _backend = backend;
         _cachePath = cachePath.TrimEnd('/');
         _slotCount = Math.Max(1, slotCount);
+        _slotSems = new SemaphoreSlim[_slotCount];
+        for (int i = 0; i < _slotCount; i++) _slotSems[i] = new SemaphoreSlim(1, 1);
         _ctxSize = ctxSize;
         _log = log;
         LoadIndex();
@@ -113,8 +117,12 @@ public sealed class KvCacheManager
 
     private async Task DoSaveAsync(int slot, string key, CancellationToken ct)
     {
+        var sem = _slotSems[Math.Max(0, slot) % _slotSems.Length];
+        bool held = false;
         try
         {
+            await sem.WaitAsync(ct); // AH-23：同槽 save 串行（防并发 /slots/save 干扰槽位状态机）
+            held = true;
             var resp = await _backend.SlotSaveAsync(slot, $"{Sanitize(key)}.bin", ct);
             var text = await resp.Content.ReadAsStringAsync();
             if (resp.IsSuccessStatusCode)
@@ -140,6 +148,7 @@ public sealed class KvCacheManager
         }
         finally
         {
+            if (held) sem.Release();
             lock (_gate)
             {
                 _inflightSaves.Remove(key);
@@ -238,11 +247,21 @@ public sealed class KvCacheManager
             try { await saveTask; } catch { /* save 失败不影响 restore 尝试 */ }
         }
 
-        // restore 前置校验：快照文件/元数据损坏 → [EDGE-CASE-SNAPSHOT-CORRUPT] + 废弃（全量 prefill 兜底）
-        if (!ValidateSnapshot(key)) return false;
+        // AH-23：同槽 save/restore 互斥（防 restore 与并发 save 竞争同一槽位状态）
+        var sem = _slotSems[Math.Max(0, slot) % _slotSems.Length];
+        await sem.WaitAsync();
+        try
+        {
+            // restore 前置校验：快照文件/元数据损坏 → [EDGE-CASE-SNAPSHOT-CORRUPT] + 废弃（全量 prefill 兜底）
+            if (!ValidateSnapshot(key)) return false;
 
-        var resp = await _backend.SlotRestoreAsync(slot, $"{Sanitize(key)}.bin", CancellationToken.None);
-        return resp.IsSuccessStatusCode;
+            var resp = await _backend.SlotRestoreAsync(slot, $"{Sanitize(key)}.bin", CancellationToken.None);
+            return resp.IsSuccessStatusCode;
+        }
+        finally
+        {
+            sem.Release();
+        }
     }
 
     /// <summary>擦除槽位 KV（不删缓存文件）。</summary>
