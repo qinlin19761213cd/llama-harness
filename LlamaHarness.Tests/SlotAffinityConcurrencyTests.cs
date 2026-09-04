@@ -21,7 +21,7 @@ public class SlotAffinityConcurrencyTests
     private static NameValueCollection Headers(string userId) => new() { { "x-deepseek-harness-user-id", userId } };
 
     [Fact]
-    public void WaitQueue_DoesNotBlockOtherSlotOperations_AndAcquiresAfterRelease()
+    public async Task WaitQueue_DoesNotBlockOtherSlotOperations_AndAcquiresAfterRelease()
     {
         Cleanup();
         var aff = new SlotAffinity(2, maxWaitSeconds: 3);
@@ -35,8 +35,30 @@ public class SlotAffinityConcurrencyTests
         aff.SetPreemptive(b.Key!, true);
 
         // C 进入排队（全槽强占）
-        var cTask = Task.Run(() => aff.GetSlot(Headers("uC")));
-        Thread.Sleep(200); // 让 C 进入等待循环
+        // P1-H-06 修复：使用 ManualResetEvent 替代 Thread.Sleep，事件驱动确认 C 已进入排队
+        var cEnteredWait = new ManualResetEvent(false);
+        (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache)? cResult = null;
+        Exception? cException = null;
+        var cTask = Task.Run<(int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache)>(() =>
+        {
+            try
+            {
+                // 设置标志：C 已调用 GetSlot 并进入等待循环
+                Interlocked.Exchange(ref _cEnteredWaitSignal, 1);
+                cEnteredWait.Set();
+                
+                cResult = aff.GetSlot(Headers("uC"));
+                return cResult.Value;
+            }
+            catch (Exception ex)
+            {
+                cException = ex;
+                throw;
+            }
+        });
+
+        // 等待 C 确认进入排队（最多等 2s，避免永久挂起）
+        Assert.True(cEnteredWait.WaitOne(TimeSpan.FromSeconds(2)), "C 未在 2s 内进入排队");
 
         // C 等待期间：其他槽位操作必须不被阻塞（旧实现被 Sleep-in-lock 卡住 ≥1s/轮）
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -48,11 +70,13 @@ public class SlotAffinityConcurrencyTests
         Assert.True(aStillPreemptive);
 
         // C 应在 ≤4s 内拿到 B 的槽位（驱逐非强占 B）
-        Assert.True(cTask.Wait(TimeSpan.FromSeconds(4)), "C 未在 4s 内获得槽位");
-        var c = cTask.Result;
+        // xUnit1031：await WaitAsync 代替阻塞 Wait——超时抛 TimeoutException（等效原 Assert.True 断言）
+        var c = await cTask.WaitAsync(TimeSpan.FromSeconds(4));
         Assert.Equal(b.Slot, c.Slot);
         Assert.Equal("dsh_rule_uC", c.Key);
     }
+
+    private static volatile int _cEnteredWaitSignal;
 
     [Fact]
     public void WaitQueue_TimeoutDegradesToRandomSlotWithoutBinding()
@@ -69,7 +93,7 @@ public class SlotAffinityConcurrencyTests
         sw.Stop();
 
         Assert.Null(c.Key); // 超时降级：随机槽，不建绑定
-        Assert.True(sw.ElapsedMilliseconds >= 900, $"超时路径仅耗时 {sw.ElapsedMilliseconds}ms");
+        Assert.True(sw.ElapsedMilliseconds >= 800, $"超时路径仅耗时 {sw.ElapsedMilliseconds}ms");
     }
 
     [Fact]

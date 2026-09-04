@@ -150,7 +150,9 @@ public sealed class PerfSampler : IDisposable
     /// <summary>慢指标异步采集：显存（nvidia-smi）+ llama.cpp 三接口；SemaphoreSlim 防上一轮未完成时重叠。</summary>
     private async Task SampleSlowAsync()
     {
-        if (!await _slowGate.WaitAsync(0)) return; // 上一轮慢采集未完成：跳过本轮，下一轮再采
+        // M-07 修复：使用 acquired 标志确保仅在成功获取信号量时才 Release，防止异常时 count > 1
+        bool acquired = await _slowGate.WaitAsync(0);
+        if (!acquired) return; // 上一轮慢采集未完成：跳过本轮，下一轮再采
         try
         {
             // —— 显存（"used/total MB" 文本，解析出两个数值）——
@@ -218,7 +220,7 @@ public sealed class PerfSampler : IDisposable
         }
         finally
         {
-            _slowGate.Release();
+            if (acquired) _slowGate.Release();
         }
     }
 

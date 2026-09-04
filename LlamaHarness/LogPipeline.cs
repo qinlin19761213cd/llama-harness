@@ -220,6 +220,8 @@ public sealed class LogPipeline : IDisposable
     private int _consecutiveIoFailures;
     private DateTime _lastFlushUtc = DateTime.UtcNow;
     private bool _disposed;
+    // M-06 修复：Enqueue 锁改为实例字段，避免静态锁在单例场景下与未来多实例扩展冲突
+    private readonly object _enqueueGate = new();
 
     /// <summary>累计 IO 失败计数（[LOG-PIPE] io_fail 埋点源）。</summary>
     public long IoFailCount => Interlocked.Read(ref _ioFailCount);
@@ -263,15 +265,14 @@ public sealed class LogPipeline : IDisposable
     /// <summary>入队一条日志（任意线程）：lock 内仅入队 + 满时丢弃计数，零编码/分类/磁盘。返回 false = 被丢弃或已停止接收。</summary>
     public bool Enqueue(LogStream stream, DateTime createUtc, string rawLine)
     {
-        lock (_gateForEnqueue)
+        // M-06 修复：使用实例锁 _enqueueGate 替代静态锁，避免四流竞争（单例场景下语义等价但符合规范）
+        lock (_enqueueGate)
         {
             if (!_accepting) return false;
             var msg = new LogMessage(stream, createUtc, FormatLine(createUtc, rawLine), rawLine);
             return _queue.TryEnqueue(msg);
         }
     }
-
-    private static readonly object _gateForEnqueue = new();
 
     /// <summary>写线程主循环：等数据信号或 150ms tick → 批量出队处理 → Flush 判定 → shutdown drain 退出。</summary>
     private void WriterLoop()

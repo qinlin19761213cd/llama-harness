@@ -98,6 +98,7 @@ public class LlamaCppMonitorCollector
     /// - 某接口失败时，对应 Raw 字段为空、解析结果为空/默认值，不抛异常；
     /// - 调用方可通过 <see cref="LlamaCppMonitorSnapshot"/> 的 Raw 字段是否为空判断各接口成功与否。
     /// </summary>
+    // P0-H-05 修复：为每个 HTTP 请求创建独立的 CancellationTokenSource，避免共享 CTS 导致连带取消和资源泄漏
     public async Task<LlamaCppMonitorSnapshot> CaptureSnapshotAsync(CancellationToken ct = default)
     {
         var snapshot = new LlamaCppMonitorSnapshot { CaptureAt = DateTime.Now };
@@ -106,46 +107,81 @@ public class LlamaCppMonitorCollector
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(ProbeTimeoutSeconds));
 
+        // P0-H-05 修复：每个请求独立 CTS + 链接父 token，避免共享 CTS 导致连带取消
+        var slotsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+        var propsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+        var metricsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+
         // 三个接口并行请求（各自独立容错，GetRawText 保留原始 JSON 文本）
-        var slotsTask = _backend.GetSlotsAsync(timeoutCts.Token);
-        var propsTask = _backend.GetPropsAsync(timeoutCts.Token);
-        var metricsTask = _backend.GetMetricsAsync(timeoutCts.Token);
-        await Task.WhenAll(slotsTask, propsTask, metricsTask);
+        var slotsTask = _backend.GetSlotsAsync(slotsCts.Token);
+        var propsTask = _backend.GetPropsAsync(propsCts.Token);
+        var metricsTask = _backend.GetMetricsAsync(metricsCts.Token);
+        
+        try
+        {
+            await Task.WhenAll(slotsTask, propsTask, metricsTask);
+        }
+        catch
+        {
+            // 任一请求失败：不影响其他请求的后续处理
+        }
 
         // /slots：解析为槽位列表
-        using var slotsDoc = await slotsTask;
+        JsonDocument? slotsDoc = null;
+        try
+        {
+            slotsDoc = await slotsTask.ConfigureAwait(false);
+        }
+        catch { /* 解析失败保留 Raw，Slots 保持空列表 */ }
+        
         if (slotsDoc != null)
         {
-            snapshot.RawSlotsJson = slotsDoc.RootElement.GetRawText();
-            try
+            using (slotsDoc) // P0-H-05 修复：using 包裹确保 JsonDocument 释放
             {
-                snapshot.Slots = JsonSerializer.Deserialize<List<LlamaSlotInfo>>(snapshot.RawSlotsJson) ?? new();
-            }
-            catch
-            {
-                // 解析失败保留 Raw，Slots 保持空列表
+                snapshot.RawSlotsJson = slotsDoc.RootElement.GetRawText();
+                try
+                {
+                    snapshot.Slots = JsonSerializer.Deserialize<List<LlamaSlotInfo>>(snapshot.RawSlotsJson) ?? new();
+                }
+                catch
+                {
+                    // 解析失败保留 Raw，Slots 保持空列表
+                }
             }
         }
 
         // /props：解析为全局配置 + 遍历全部字段
-        using var propsDoc = await propsTask;
+        JsonDocument? propsDoc = null;
+        try
+        {
+            propsDoc = await propsTask.ConfigureAwait(false);
+        }
+        catch { /* 解析失败保留 Raw，GlobalProps 保持默认值 */ }
+        
         if (propsDoc != null)
         {
-            snapshot.RawPropsJson = propsDoc.RootElement.GetRawText();
-            try
+            using (propsDoc) // P0-H-05 修复：using 包裹确保 JsonDocument 释放
             {
-                snapshot.GlobalProps = JsonSerializer.Deserialize<LlamaGlobalProps>(snapshot.RawPropsJson) ?? new();
-                // 递归展开原始 JSON 所有字段（含嵌套），存入 RawFields（key.path → value）
-                FlattenJson(propsDoc.RootElement, "", snapshot.GlobalProps.RawFields);
-            }
-            catch
-            {
-                // 解析失败保留 Raw，GlobalProps 保持默认值
+                snapshot.RawPropsJson = propsDoc.RootElement.GetRawText();
+                try
+                {
+                    snapshot.GlobalProps = JsonSerializer.Deserialize<LlamaGlobalProps>(snapshot.RawPropsJson) ?? new();
+                    // 递归展开原始 JSON 全部字段（含嵌套），存入 RawFields（key.path → value）
+                    FlattenJson(propsDoc.RootElement, "", snapshot.GlobalProps.RawFields);
+                }
+                catch
+                {
+                    // 解析失败保留 Raw，GlobalProps 保持默认值
+                }
             }
         }
 
         // /metrics：Prometheus 文本格式，直接保留原文
-        snapshot.RawMetricsText = await metricsTask ?? "";
+        try
+        {
+            snapshot.RawMetricsText = await metricsTask.ConfigureAwait(false) ?? "";
+        }
+        catch { /* 失败保留空字符串 */ }
 
         return snapshot;
     }

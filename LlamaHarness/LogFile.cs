@@ -83,20 +83,24 @@ public static class LogFile
         }
     }
 
-    /// <summary>追加一行日志（可来自任意线程）：捕获 Utc 时间戳 + 更新 _recent + Enqueue（即返回，零磁盘）。
-    /// warn_error 派生块由写线程按 Classify 结果生成（上下文 = 该条之前 10 条）。</summary>
+    /// <summary>追加一行日志（可来自任意线程）：捕获 Utc 时间戳 + Enqueue（即返回，零磁盘）→ 成功后更新 _recent。
+    /// L-06 修复：_recent 在 Enqueue 成功后更新，避免队列满丢弃时 SnapshotRecent 返回脏数据。</summary>
     public static void Append(string line)
     {
         try
         {
             var utc = DateTime.UtcNow;
             var stamped = LogPipeline.FormatLine(utc, line);
-            lock (_recentGate)
+            // L-06：先 Enqueue，成功后再更新 _recent，保证一致性
+            bool enqueued = _pipeline.Value.Enqueue(LogStream.Main, utc, line);
+            if (enqueued)
             {
-                _recent.Enqueue(stamped);
-                while (_recent.Count > ContextLines) _recent.Dequeue();
+                lock (_recentGate)
+                {
+                    _recent.Enqueue(stamped);
+                    while (_recent.Count > ContextLines) _recent.Dequeue();
+                }
             }
-            _pipeline.Value.Enqueue(LogStream.Main, utc, line);
         }
         catch
         {

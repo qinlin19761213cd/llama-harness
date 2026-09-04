@@ -271,16 +271,27 @@ public static class TokenGuard
         return best;
     }
 
-    /// <summary>字符级保守估算 token 数（tokenize 端点不可用时的兜底口径）：CJK 字符≈1 token、其余≈len/4，取偏保守（宁多裁不 400）。</summary>
+    /// <summary>字符级保守估算 token 数（tokenize 端点不可用时的兜底口径）：CJK 字符≈1 token、emoji/surrogate pair≈2 token、其余≈len/4，取偏保守（宁多裁不 400）。</summary>
     public static int EstimateTokensByChars(string text)
     {
         if (string.IsNullOrEmpty(text)) return 0;
-        int cjk = 0, other = 0;
+        int cjk = 0, emoji = 0, other = 0;
         foreach (char ch in text)
         {
-            if (ch >= 0x4E00 && ch <= 0x9FFF) cjk++;
-            else other++;
+            // CJK Unified Ideographs（基本区）
+            if (ch >= 0x4E00 && ch <= 0x9FFF) { cjk++; continue; }
+            // Emoji / Symbols / surrogate pairs（多 char 组成的 Unicode 字符）
+            // 覆盖: 0x1F000-0x1FFFF (emoji), 0x2600-0x27FF (symbols), 0xFE00-0xFE0F (variation), 0x20000+ (surrogate high/low)
+            if ((ch >= 0x1F000 && ch <= 0x1FFFF) || (ch >= 0x2600 && ch <= 0x27FF) ||
+                (ch >= 0xFE00 && ch <= 0xFE0F) || (ch >= 0x20000 && ch <= 0x2FFFF) ||
+                (ch >= 0xD800 && ch <= 0xDBFF)) // surrogate high → 标记为 emoji（low surrogate 后续跳过）
+            {
+                emoji++;
+                continue;
+            }
+            other++;
         }
-        return Math.Max(1, cjk + other / 4);
+        // M-04 修复：emoji/surrogate pair 每个约 2 token，防止低估；CJK 1:1；其余 4:1
+        return Math.Max(1, cjk + emoji * 2 + other / 4);
     }
 }

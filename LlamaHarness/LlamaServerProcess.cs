@@ -85,6 +85,11 @@ public sealed class LlamaServerProcess : IDisposable
         {
             // 进程可能刚好自行退出，或对象已释放，忽略
         }
+        finally
+        {
+            _proc?.Dispose();
+            _proc = null;
+        }
     }
 
     public void Dispose()

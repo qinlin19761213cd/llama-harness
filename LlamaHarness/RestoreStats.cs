@@ -31,7 +31,7 @@ public sealed class RestoreStats
     private int _totalFullPrefill; // 全量 prefill 累计（kv_full_prefill 累积型指标源）
     private long _reuseTokens;   // KV 复用累计 token 数（HitByDelta 判定时 saved_n 累计，v2.23.11 ROI）
     private double _reuseSavedMs; // KV 复用累计节省的 prefill 时间 ms（saved_n/参考tps 折算，v2.23.11 ROI）
-    private double _refPrefillTps; // 全量 prefill 参考吞吐（FullPrefill 判定时记录，v2.23.11 ROI 折算基准——增量小批 tps 无参考意义）
+    private readonly Dictionary<string, double> _refPrefillTpsBy = new(StringComparer.OrdinalIgnoreCase); // key → 全量 prefill 参考吞吐（v2.23.11 ROI 折算基准）
     private int _maxSavedN; // 会话最大 token 偏移（可观测 kv 累积型指标 saved_n 源）
     private readonly HashSet<string> _driftAlertedKeys = new(StringComparer.OrdinalIgnoreCase); // 已告警漂移 key（链归零时移除，允许再次告警）
     private int _driftAlertCount; // 前缀漂移告警累计次数（状态栏展示）
@@ -168,11 +168,12 @@ public sealed class RestoreStats
                 // v2.23.11 ROI 量化：命中时 saved_n 即本次复用的 token 数；节省时间用「全量 prefill 参考吞吐」折算
                 // （增量小批 tps 因 token 少达不到批量并行吞吐，直接折算会高估 10~100 倍——实测 4 token 12.64tps vs 全量 961tps）
                 _reuseTokens += p.SavedN;
-                if (_refPrefillTps > 0) _reuseSavedMs += p.SavedN / _refPrefillTps * 1000.0;
+                if (_refPrefillTpsBy.TryGetValue(p.Key, out var tpsVal) && tpsVal > 0)
+                    _reuseSavedMs += p.SavedN / tpsVal * 1000.0;
             }
             else if (reason == "FullPrefill" && tps > 0)
             {
-                _refPrefillTps = tps; // 全量 prefill 吞吐 = 真实参考（该 key 完整 prefill 的批量吞吐）
+                _refPrefillTpsBy[p.Key] = tps; // 全量 prefill 吞吐 = 真实参考（该 key 完整 prefill 的批量吞吐）
             }
             if (falseMiss) _totalFalseMiss++;
             if (falseHit) _totalFalseHit++;

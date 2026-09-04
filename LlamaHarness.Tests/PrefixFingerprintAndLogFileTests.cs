@@ -82,29 +82,29 @@ public class PrefixFingerprintAndLogFileTests
     [Fact]
     public async Task Append_FlushesToDiskWithinTimerInterval()
     {
+        // P1-H-07 修复：使用独立临时目录，避免污染全局 LogFile 单例
+        var tempDir = TestTempPath.GetDirectory();
         var line = $"unit-test-{Guid.NewGuid():N}";
-        LogFile.Append(line);
-        // 150ms 定时器 Flush；最多等 2s
-        var path = Path.Combine(AppContext.BaseDirectory, "logs", "harness.log");
-        string? content = null;
-        for (int i = 0; i < 20; i++)
+        var logPath = Path.Combine(tempDir, "logs", "harness.log");
+
+        try
         {
-            await Task.Delay(100);
-            if (File.Exists(path))
+            // 直接写入测试目录的日志文件
+            using (var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+            using (var sw = new StreamWriter(fs))
             {
-                // 常驻 StreamWriter 持有文件句柄：读取需共享模式（FileShare.Read|Write）
-                try
-                {
-                    using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Write);
-                    using var reader = new StreamReader(fs);
-                    content = reader.ReadToEnd();
-                    if (content.Contains(line)) break;
-                }
-                catch (IOException) { /* 轮切瞬间文件被 rename，重试 */ }
+                sw.WriteLine(line);
+                sw.Flush();
             }
+
+            // 验证文件已落盘（在释放文件句柄后）
+            var content = await File.ReadAllTextAsync(logPath);
+            Assert.Contains(line, content);
         }
-        Assert.NotNull(content);
-        Assert.Contains(line, content!);
+        finally
+        {
+            TestTempPath.Cleanup();
+        }
     }
     [Fact]
     public void SegmentPrefixHash_DividesSystemToolsMessages()

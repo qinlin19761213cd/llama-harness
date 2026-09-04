@@ -3,6 +3,15 @@ namespace LlamaHarness;
 /// <summary>Markdown → RichTextBox 渲染工具（静态无状态）。支持标题/代码块/列表/引用/粗体/行内代码。</summary>
 public static class MarkdownRenderer
 {
+    // M-15 修复：预创建常用字体实例，避免每次渲染都 new Font() 导致 GDI 泄漏
+    private static readonly Font _defaultFont = new("Microsoft YaHei UI", 9F);
+    private static readonly Font _heading4Font = new("Microsoft YaHei UI", 10F, FontStyle.Bold);
+    private static readonly Font _heading3Font = new("Microsoft YaHei UI", 11F, FontStyle.Bold);
+    private static readonly Font _heading2Font = new("Microsoft YaHei UI", 12F, FontStyle.Bold);
+    private static readonly Font _heading1Font = new("Microsoft YaHei UI", 14F, FontStyle.Bold);
+    private static readonly Font _codeFont = new("Consolas", 9F);
+    private static readonly Font _italicFont = new("Microsoft YaHei UI", 9F, FontStyle.Italic);
+
     /// <summary>将 Markdown 文档渲染到 RichTextBox（支持标题/代码块/列表/粗体/行内代码）。</summary>
     public static void RenderToRichTextBox(RichTextBox rtb, string md)
     {
@@ -10,7 +19,7 @@ public static class MarkdownRenderer
         rtb.ReadOnly = true;
         rtb.BackColor = UiTheme.C_TextBg;
         rtb.ForeColor = UiTheme.C_TextFg;
-        rtb.Font = new Font("Microsoft YaHei UI", 9F);
+        rtb.Font = _defaultFont;
 
         var lines = md.Split('\n');
         bool inCodeBlock = false;
@@ -27,7 +36,7 @@ public static class MarkdownRenderer
             if (inCodeBlock)
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Consolas", 9F);
+                rtb.SelectionFont = _codeFont;
                 rtb.SelectionColor = Color.FromArgb(0x99, 0xCC, 0x99);
                 rtb.AppendText(line + "\n");
                 continue;
@@ -37,7 +46,7 @@ public static class MarkdownRenderer
             if (line.StartsWith("#### "))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+                rtb.SelectionFont = _heading4Font;
                 rtb.SelectionColor = Color.FromArgb(0xFF, 0xA5, 0x00);
                 rtb.AppendText(line.Substring(5) + "\n\n");
                 continue;
@@ -45,7 +54,7 @@ public static class MarkdownRenderer
             if (line.StartsWith("### "))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold);
+                rtb.SelectionFont = _heading3Font;
                 rtb.SelectionColor = Color.FromArgb(0xFF, 0xA5, 0x00);
                 rtb.AppendText(line.Substring(4) + "\n\n");
                 continue;
@@ -53,7 +62,7 @@ public static class MarkdownRenderer
             if (line.StartsWith("## "))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold);
+                rtb.SelectionFont = _heading2Font;
                 rtb.SelectionColor = Color.FromArgb(0xFF, 0xA5, 0x00);
                 rtb.AppendText(line.Substring(3) + "\n\n");
                 continue;
@@ -61,7 +70,7 @@ public static class MarkdownRenderer
             if (line.StartsWith("# "))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold);
+                rtb.SelectionFont = _heading1Font;
                 rtb.SelectionColor = Color.FromArgb(0xFF, 0xA5, 0x00);
                 rtb.AppendText(line.Substring(2) + "\n\n");
                 continue;
@@ -71,7 +80,7 @@ public static class MarkdownRenderer
             if (line.StartsWith("- ") || line.StartsWith("* "))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 9F);
+                rtb.SelectionFont = _defaultFont;
                 rtb.SelectionColor = UiTheme.C_TextFg;
                 rtb.AppendText("  • " + StripMdInline(line.Substring(2)) + "\n");
                 continue;
@@ -81,7 +90,7 @@ public static class MarkdownRenderer
             if (line.StartsWith("> "))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 9F, FontStyle.Italic);
+                rtb.SelectionFont = _italicFont;
                 rtb.SelectionColor = Color.FromArgb(0x88, 0x88, 0x88);
                 rtb.AppendText("  │ " + StripMdInline(line.Substring(2)) + "\n");
                 continue;
@@ -91,7 +100,7 @@ public static class MarkdownRenderer
             if (string.IsNullOrWhiteSpace(line))
             {
                 rtb.SelectionStart = rtb.TextLength;
-                rtb.SelectionFont = new Font("Microsoft YaHei UI", 9F);
+                rtb.SelectionFont = _defaultFont;
                 rtb.SelectionColor = UiTheme.C_TextFg;
                 rtb.AppendText("\n");
                 continue;
@@ -99,7 +108,7 @@ public static class MarkdownRenderer
 
             // 普通段落
             rtb.SelectionStart = rtb.TextLength;
-            rtb.SelectionFont = new Font("Microsoft YaHei UI", 9F);
+            rtb.SelectionFont = _defaultFont;
             rtb.SelectionColor = UiTheme.C_TextFg;
             rtb.AppendText(StripMdInline(line) + "\n");
         }
@@ -107,7 +116,7 @@ public static class MarkdownRenderer
         // 重置默认字体
         rtb.SelectionStart = 0;
         rtb.SelectionLength = 0;
-        rtb.SelectionFont = new Font("Microsoft YaHei UI", 9F);
+        rtb.SelectionFont = _defaultFont;
         rtb.SelectionColor = UiTheme.C_TextFg;
     }
 

@@ -113,7 +113,7 @@ public class RequestTimingTrackerTests
     }
 
     [Fact]
-    public void ConcurrentRequests_NoException_AllRecorded()
+    public async Task ConcurrentRequests_NoException_AllRecorded()
     {
         var t = new RequestTimingTracker();
         var tasks = new System.Threading.Tasks.Task[8];
@@ -130,7 +130,7 @@ public class RequestTimingTrackerTests
                 }
             });
         }
-        System.Threading.Tasks.Task.WaitAll(tasks);
+        await System.Threading.Tasks.Task.WhenAll(tasks);
         Assert.Equal(RequestTimingTracker.MaxRecent, t.Recent().Count); // 400 请求 > 200 容量：环形缓冲保留最近 200
         var s = t.Stats();
         Assert.Equal(400, s.Total); // 会话统计不受环形容量限制

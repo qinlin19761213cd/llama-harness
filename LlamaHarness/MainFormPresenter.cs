@@ -28,13 +28,23 @@ public sealed class MainFormPresenter
         _monitor = monitor;
     }
 
+    // M-08/M-09 修复：保存事件处理器引用以便 DetachScheduler 正确取消订阅
+    private Action<string>? _schedLogHandler;
+    private Action<string>? _schedStatusHandler;
+    private Action? _schedInflightHandler;
+    private Action<SmartScheduler.Phase>? _schedPhaseHandler;
+    private Action? _schedStatsResetHandler;
+    private Action<SmartScheduler.ThinkingLevel>? _schedThinkingModeHandler;
+    private Action? _schedSlotBindingChangedHandler;
+    private Action<string>? _schedSlotLogHandler;
+
     /// <summary>订阅调度器全部事件并路由到 LogView / 区域 Controller（UI 侧经 BeginInvoke 切回）。</summary>
     public void AttachScheduler()
     {
-        _scheduler.Log += line => { _view.AppendLog(line); _stats.FeedLine(line); };
-        _scheduler.StatusChanged += text => _view.InvokeOnUi(() => _status.SetStatusText(text));
-        _scheduler.InFlightChanged += () => _view.InvokeOnUi(_status.RefreshInFlightTasks); // 在途任务明细（服务阶段卡片）
-        _scheduler.PhaseChanged += phase =>
+        _schedLogHandler = line => { _view.AppendLog(line); _stats.FeedLine(line); };
+        _schedStatusHandler = text => _view.InvokeOnUi(() => _status.SetStatusText(text));
+        _schedInflightHandler = () => _view.InvokeOnUi(_status.RefreshInFlightTasks); // 在途任务明细（服务阶段卡片）
+        _schedPhaseHandler = phase =>
         {
             // C-007：统计重置由调度器状态机驱动（Waking 时自动触发）
             if (phase == SmartScheduler.Phase.Waking)
@@ -47,18 +57,44 @@ public sealed class MainFormPresenter
                     _slot.RefreshBindings();
             });
         };
-        _scheduler.StatsReset += () => _stats.Reset();
-        _scheduler.ThinkingModeChanged += level => _view.InvokeOnUi(() => _status.UpdateThinkingLabel(level));
-        _scheduler.SlotBindingChanged += () => _slot.RefreshBindings();
-        _scheduler.SlotLog += line => _slot.OnSlotLog(line);
+        _schedStatsResetHandler = () => _stats.Reset();
+        _schedThinkingModeHandler = level => _view.InvokeOnUi(() => _status.UpdateThinkingLabel(level));
+        _schedSlotBindingChangedHandler = () => _slot.RefreshBindings();
+        _schedSlotLogHandler = line => _slot.OnSlotLog(line);
+
+        _scheduler.Log += _schedLogHandler!;
+        _scheduler.StatusChanged += _schedStatusHandler!;
+        _scheduler.InFlightChanged += _schedInflightHandler!;
+        _scheduler.PhaseChanged += _schedPhaseHandler!;
+        _scheduler.StatsReset += _schedStatsResetHandler!;
+        _scheduler.ThinkingModeChanged += _schedThinkingModeHandler!;
+        _scheduler.SlotBindingChanged += _schedSlotBindingChangedHandler!;
+        _scheduler.SlotLog += _schedSlotLogHandler!;
+    }
+
+    /// <summary>取消订阅调度器全部事件（M-08/M-09 修复：防止事件泄漏）。</summary>
+    public void DetachScheduler()
+    {
+        if (_schedLogHandler != null) _scheduler.Log -= _schedLogHandler;
+        if (_schedStatusHandler != null) _scheduler.StatusChanged -= _schedStatusHandler;
+        if (_schedInflightHandler != null) _scheduler.InFlightChanged -= _schedInflightHandler;
+        if (_schedPhaseHandler != null) _scheduler.PhaseChanged -= _schedPhaseHandler;
+        if (_schedStatsResetHandler != null) _scheduler.StatsReset -= _schedStatsResetHandler;
+        if (_schedThinkingModeHandler != null) _scheduler.ThinkingModeChanged -= _schedThinkingModeHandler;
+        if (_schedSlotBindingChangedHandler != null) _scheduler.SlotBindingChanged -= _schedSlotBindingChangedHandler;
+        if (_schedSlotLogHandler != null) _scheduler.SlotLog -= _schedSlotLogHandler;
     }
 
     /// <summary>启动/唤醒：同步配置 → 异步启动（失败弹窗）。</summary>
-    public async void OnStartClicked()
+    // P0-H-03 修复：消除 async void，使用 async Task 内部方法 + async void 包装器
+    // async void 仅用于事件处理器入口，内部逻辑走 async Task 确保异常被正确捕获
+    public async void OnStartClicked() => await OnStartClickedAsync();
+
+    private async Task OnStartClickedAsync()
     {
-        _view.SyncConfigFromUi();
         try
         {
+            _view.SyncConfigFromUi();
             // v2.23.6：唤醒链（EnsureRunning→WakeUp→KV restore→dummy 预热）整体在 Task.Run 线程池执行——
             // 其内部 await 均无 ConfigureAwait(false)，若从 UI 线程启动则恢复点回 UI 线程 SynchronizationContext，
             // 唤醒期间大量逻辑（KV restore/预热/日志/SetPhase 回调）穿插占用 UI 线程。后台执行 + 事件封送安全。
@@ -66,8 +102,9 @@ public sealed class MainFormPresenter
         }
         catch (Exception ex)
         {
-            MessageBox.Show(_view, $"启动失败：\n{ex.Message}", "错误",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            // P0-H-03 修复：MessageBox.Show 必须在 UI 线程调用
+            _view.InvokeOnUi(() => MessageBox.Show(_view, $"启动失败：\n{ex.Message}", "错误",
+                MessageBoxButtons.OK, MessageBoxIcon.Error));
         }
     }
 
@@ -79,18 +116,22 @@ public sealed class MainFormPresenter
     }
 
     /// <summary>清空 KV Cache：删除缓存目录下所有 *.bin + erase 全部槽位（二次确认 + 执行期禁用按钮）。</summary>
-    public async void OnClearCacheClicked()
+    // P0-H-04 修复：消除 async void，使用 async Task 内部方法 + async void 包装器
+    public async void OnClearCacheClicked() => await OnClearCacheClickedAsync();
+
+    private async Task OnClearCacheClickedAsync()
     {
         var kv = _scheduler.GetKvCache();
         if (kv == null)
         {
-            MessageBox.Show(_view, "KV Cache 未启用（需要 --parallel > 1 且配置了缓存路径）。\n\n请在配置管理中设置「缓存路径」并把 Parallel 改为 2，然后重新启动。", "提示",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _view.InvokeOnUi(() => MessageBox.Show(_view, "KV Cache 未启用（需要 --parallel > 1 且配置了缓存路径）。\n\n请在配置管理中设置「缓存路径」并把 Parallel 改为 2，然后重新启动。", "提示",
+                MessageBoxButtons.OK, MessageBoxIcon.Information));
             return;
         }
 
-        if (MessageBox.Show(_view, "确定清空所有 KV Cache 缓存？\n将删除缓存目录下所有 .bin 文件并擦除全部槽位。", "确认",
-            MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        var confirm = _view.InvokeOnUiSync(() => MessageBox.Show(_view, "确定清空所有 KV Cache 缓存？\n将删除缓存目录下所有 .bin 文件并擦除全部槽位。", "确认",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question));
+        if (confirm != DialogResult.Yes)
             return;
 
         _view.SetClearCacheEnabled(false);
