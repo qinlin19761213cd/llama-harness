@@ -19,7 +19,7 @@ public interface IBackendClient : IDisposable
     /// <summary>非流式 chat/completions：POST {base}/v1/chat/completions，返回原始响应（TokenGuard 计量/验证、Lifecycle dummy 预热用）。</summary>
     Task<HttpResponseMessage> ChatCompletionsAsync(string body, CancellationToken ct);
 
-    /// <summary>tokenize 计数：POST /v1/tokenize（旧）→ /tokenize（新）双路径，返回 token 数；全部失败返回 null（调用方降级）。</summary>
+    /// <summary>tokenize 计数：POST /tokenize（新，b10676+ 主路径）→ /v1/tokenize（旧）双路径，返回 token 数；全部失败返回 null（调用方降级）。</summary>
     Task<int?> TokenizeAsync(string text, CancellationToken ct);
 
     /// <summary>槽位 KV 落盘：POST /slots/{slot}?action=save，body {filename}。返回原始响应（调用方解析 n_saved/n_written）。</summary>

@@ -6,7 +6,7 @@ namespace LlamaHarness;
 
 /// <summary>
 /// Token Guard：代理层 token 预估算 + 裁剪，防 "request exceeds context size" 400 错误。
-/// - 计数：POST /tokenize（优先 /v1/tokenize 兼容旧版，404 回退 /tokenize）到后端 llama-server（真实分词器，本地毫秒级）
+/// - 计数：POST /tokenize（b10676+ 主路径，优先）→ /v1/tokenize（兼容旧版兜底）到后端 llama-server（真实分词器，本地毫秒级）
 /// - 预算：CtxSize ÷ Parallel − ReservedOutputTokens（多槽均分总容量）
 /// - 裁剪：轮次制（整轮删除最旧对话，保证 tool_call/tool_result 配对完整）
 ///   + 内容兜底（单条超大消息如巨型 tool_result 做字符级截断）
@@ -17,7 +17,7 @@ public static class TokenGuard
     private const int MinTrimLen = 50;
     private const int MinTrimContentLen = 200;
     private const int GuardTimeoutSeconds = 30;
-    /// <summary>经后端 tokenize 端点计数 token。优先 /v1/tokenize（OpenAI 兼容旧路径），失败回退 /tokenize（llama.cpp b10676+ 新路径）。
+    /// <summary>经后端 tokenize 端点计数 token。优先 /tokenize（llama.cpp b10676+ 新路径），失败回退 /v1/tokenize（OpenAI 兼容旧路径）。
     /// 故障实证：b10676 已移除 /v1/tokenize（实测 404），tokenize 迁移到 /tokenize；双路径保证新旧版本兼容。
     /// 每次失败输出 [TOKEN-GUARD-WARN] 诊断日志（HTTP 码/异常），消除"只见 FAILED 不知为何"的盲区。全部失败返回 null（调用方降级）。</summary>
     /// <summary>经后端 tokenize 端点计数 token（双路径容错已下沉到 IBackendClient.TokenizeAsync）。失败返回 null（调用方降级）。</summary>

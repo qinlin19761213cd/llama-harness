@@ -85,7 +85,7 @@ public sealed class LlamaServerClient : IBackendClient
     // ── ②' tokenize 计数（TokenGuard 计量）──────────────────
     public async Task<int?> TokenizeAsync(string text, CancellationToken ct)
     {
-        string[] endpoints = { "/v1/tokenize", "/tokenize" }; // b10676+ 迁移：旧 /v1/tokenize 404 后回退 /tokenize
+        string[] endpoints = { "/tokenize", "/v1/tokenize" }; // b10676+ 主路径 /tokenize 优先（消除每请求一次 404 噪音）；/v1/tokenize 仅兼容旧版 llama.cpp 兜底
         for (int i = 0; i < endpoints.Length; i++)
         {
             try
