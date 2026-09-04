@@ -11,6 +11,7 @@ public sealed class LogView : UserControl
 
     private readonly Queue<(string line, string entry)> _logQueue = new();
     private readonly System.Windows.Forms.Timer _logFlushTimer = new() { Interval = 150 };
+    private bool _isFlushing; // M-13 修复：防止 Flush() 重入（AppendText 触发事件导致）
 
     /// <summary>主日志 RichTextBox（页签宿主/清空等外部引用此实例）。</summary>
     public RichTextBox TxtLog { get; } = new()
@@ -66,9 +67,13 @@ public sealed class LogView : UserControl
         if (HasPending) Flush();
     }
 
-    /// <summary>批量消费日志队列：一次 AppendText + 逐行着色，大幅减少 RichTextBox 重绘次数。（UI 线程）</summary>
+    /// <summary>批量消费日志队列：一次 AppendText + 逐行着色，大幅减少 RichTextBox 重绘次数。（UI 线程）
+    /// M-13 修复：使用 _isFlushing 标志防止重入（AppendText 触发事件导致）。</summary>
     public void Flush()
     {
+        // M-13：防重入——如果已经在 Flush 中，直接返回（避免 AppendText 触发事件导致递归）
+        if (_isFlushing) return;
+
         List<(string line, string entry)> batch;
         lock (_logQueue)
         {
@@ -76,6 +81,10 @@ public sealed class LogView : UserControl
             batch = new List<(string line, string entry)>(_logQueue.Count);
             while (_logQueue.Count > 0) batch.Add(_logQueue.Dequeue());
         }
+
+        // M-13 回归修复：防重入标志仅在真正消费队列时设置（原实现空队列 return 时 _isFlushing
+        // 永久残留 true，导致后续所有 Flush 直接返回、UI 日志永久停摆）。空队列路径不设标志。
+        _isFlushing = true;
 
         try
         {
@@ -116,6 +125,11 @@ public sealed class LogView : UserControl
         catch
         {
             // 显示层异常不得杀死日志管道（文件层已持久化），吞掉继续
+        }
+        finally
+        {
+            // M-13：确保无论成功/异常都清除重入标志
+            _isFlushing = false;
         }
     }
 }

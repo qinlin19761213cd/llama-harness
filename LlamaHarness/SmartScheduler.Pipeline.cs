@@ -27,10 +27,12 @@ public partial class SmartScheduler
 
         // ① 读取完整请求体（非流式检测 / 强制流式改写需要）；GET 无请求体
         // AH-5：请求体大小上限（本机恶意大 body 内存 DoS 防护）；超限 413
+        // L-05：使用 BackendRequestTimeoutSeconds 超时令牌，防 Slowloris 攻击导致线程永久阻塞
         byte[]? bodyBytes;
         try
         {
-            bodyBytes = await RequestProcessor.ReadRequestBodyAsync(req, MaxRequestBodyBytes);
+            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(_cfg.BackendRequestTimeoutSeconds));
+            bodyBytes = await RequestProcessor.ReadRequestBodyAsync(req, MaxRequestBodyBytes, readCts.Token);
         }
         catch (InvalidDataException ex)
         {
@@ -157,7 +159,9 @@ public partial class SmartScheduler
                 HttpResponseMessage retryResp;
                 try
                 {
-                    retryResp = await Backend.SendAsync(newMsg, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None);
+                    // M-05 修复：使用超时令牌替代 CancellationToken.None，防止重发请求无限挂起
+                    using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(_cfg.BackendRequestTimeoutSeconds));
+                    retryResp = await Backend.SendAsync(newMsg, HttpCompletionOption.ResponseHeadersRead, retryCts.Token);
                 }
                 catch (HttpRequestException)
                 {

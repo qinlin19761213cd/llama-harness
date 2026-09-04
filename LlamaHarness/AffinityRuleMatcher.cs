@@ -12,10 +12,14 @@ public static class AffinityRuleMatcher
     /// <summary>AH-16：头值参与亲和 key 时的长度上限（防客户端超长头导致 key 膨胀——KV 文件名/JSON/内存）。</summary>
     private const int MaxHeaderValueLength = 256;
 
-    /// <summary>按 Priority 升序遍历规则，第一条命中返回 key；全不命中返回 null（调用方走随机槽，不建绑定）。</summary>
+    /// <summary>按 Priority 升序遍历规则，第一条命中返回 key；全不命中返回 null（调用方走随机槽，不建绑定）。
+    /// L-08 修复：使用 Array.Sort 替代 LINQ OrderBy，减少每次调用的 GC 分配。</summary>
     public static string? Match(NameValueCollection headers, IEnumerable<AffinityRule> rules)
     {
-        foreach (var r in rules.OrderBy(x => x.Priority))
+        // L-08：将 IEnumerable 转为数组后原地排序（避免 LINQ OrderBy 的额外分配）
+        var arr = rules as AffinityRule[] ?? rules.ToArray();
+        Array.Sort(arr, (a, b) => a.Priority.CompareTo(b.Priority));
+        foreach (var r in arr)
         {
             var key = TryMatch(headers, r);
             if (key != null) return key;

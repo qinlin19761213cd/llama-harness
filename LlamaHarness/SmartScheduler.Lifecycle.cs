@@ -30,7 +30,15 @@ public partial class SmartScheduler
         {
             t = _wakeTask ??= WakeUpAsync();
         }
-        await t.WaitAsync(TimeSpan.FromSeconds(WakeWaitTimeoutSeconds));
+        // P0-H-01 修复：使用 try-catch 捕获 TimeoutException，避免调用方误认为唤醒已完成导致请求无限排队
+        try
+        {
+            await t.WaitAsync(TimeSpan.FromSeconds(WakeWaitTimeoutSeconds));
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException($"唤醒等待超时（{WakeWaitTimeoutSeconds}s），llama-server 未就绪。");
+        }
     }
 
     /// <summary>
@@ -307,7 +315,8 @@ public partial class SmartScheduler
             RaiseStatus($"运行中 · {(int)remaining.TotalMinutes:D2}:{remaining.Seconds:D2} 无请求后自动休眠");
 
         // P 核亲和性自愈：每 5 秒检查一次，被系统重置时自动重绑
-        if (++_tickCount % AffinityHealEveryTicks == 0 && CpuAffinity.Heal(_server.Current, _cfg.PCoreMask))
+        // L-02 修复：使用 Interlocked.Increment 确保原子递增
+        if (Interlocked.Increment(ref _tickCount) % AffinityHealEveryTicks == 0 && CpuAffinity.Heal(_server.Current, _cfg.PCoreMask))
             Log?.Invoke("检测到 CPU 亲和性被重置，已重新绑定 P 核。");
     }
 
@@ -465,7 +474,9 @@ public partial class SmartScheduler
 
     private void SetPhase(Phase p)
     {
-        if (CurrentPhase == p) return;
+        // L-01 修复：先写入再比较旧值，避免 TOCTOU 窗口
+        int oldPhase = Volatile.Read(ref _phase);
+        if ((Phase)oldPhase == p) return;
         Volatile.Write(ref _phase, (int)p);
         PhaseChanged?.Invoke(p);
     }

@@ -235,7 +235,21 @@ public partial class SmartScheduler
     private static async Task<bool> ProbeClientConnectedAsync(HttpListenerResponse outResp, SemaphoreSlim writeGate)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(": keepalive\n");
-        await writeGate.WaitAsync();
+        // M-02 修复：WaitAsync 增加超时保护，避免永久阻塞；超时视为客户端已断开
+        bool acquired;
+        try
+        {
+            acquired = await writeGate.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch
+        {
+            return false;
+        }
+        if (!acquired)
+        {
+            // 写门控信号量获取超时：判定客户端已断开（调用方日志由 RunCrashRecoveryAsync 记录）
+            return false;
+        }
         try
         {
             await outResp.OutputStream.WriteAsync(bytes);

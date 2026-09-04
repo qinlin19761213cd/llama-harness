@@ -52,6 +52,13 @@ public sealed class KvCacheManager
         LoadIndex();
     }
 
+    /// <summary>释放 SemaphoreSlim 资源。</summary>
+    public void Dispose()
+    {
+        foreach (var sem in _slotSems)
+            try { sem.Dispose(); } catch { /* 忽略 */ }
+    }
+
 
     /// <summary>缓存目录路径。</summary>
     public string CachePath => _cachePath;
@@ -117,13 +124,19 @@ public sealed class KvCacheManager
 
     private async Task DoSaveAsync(int slot, string key, CancellationToken ct)
     {
+        // KV-CACHE 兜底：save 一律 30s 上限（无论调用方是否传超时），防后端 /slots/save 不响应导致
+        // save 无限挂起、占住同槽 sem、阻塞后续 restore / 驱逐前 save（请求路径）。超时抛 OCE 走调用方失败降级。
+        using var saveTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        saveTimeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
+        var effCt = saveTimeoutCts.Token;
+
         var sem = _slotSems[Math.Max(0, slot) % _slotSems.Length];
         bool held = false;
         try
         {
-            await sem.WaitAsync(ct); // AH-23：同槽 save 串行（防并发 /slots/save 干扰槽位状态机）
+            await sem.WaitAsync(effCt); // AH-23：同槽 save 串行（防并发 /slots/save 干扰槽位状态机）
             held = true;
-            var resp = await _backend.SlotSaveAsync(slot, $"{Sanitize(key)}.bin", ct);
+            var resp = await _backend.SlotSaveAsync(slot, $"{Sanitize(key)}.bin", effCt);
             var text = await resp.Content.ReadAsStringAsync();
             if (resp.IsSuccessStatusCode)
             {
@@ -145,6 +158,11 @@ public sealed class KvCacheManager
             {
                 throw new InvalidOperationException($"HTTP {(int)resp.StatusCode}");
             }
+        }
+        catch (OperationCanceledException)
+        {
+            _log?.Invoke($"[KV-CACHE-TIMEOUT] save 超时：key={key}，槽位 KV 未持久化（调用方走失败降级）");
+            throw; // 抛给调用方：驱逐前 save / 首存档 / 后台快照 / 截断断点 / 休眠前统一走各自失败降级
         }
         finally
         {
@@ -244,31 +262,54 @@ public sealed class KvCacheManager
         }
         if (saveTask != null)
         {
-            try { await saveTask; } catch { /* save 失败不影响 restore 尝试 */ }
+            try
+            {
+                // M-03 修复：增加超时保护，避免上游 save 异常时后续请求永久挂起
+                await saveTask.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+            catch
+            {
+                /* save 失败或超时不影响 restore 尝试 */
+            }
         }
 
         // AH-23：同槽 save/restore 互斥（防 restore 与并发 save 竞争同一槽位状态）
         var sem = _slotSems[Math.Max(0, slot) % _slotSems.Length];
-        await sem.WaitAsync();
+        using var restoreCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
+            await sem.WaitAsync(restoreCts.Token);
             // restore 前置校验：快照文件/元数据损坏 → [EDGE-CASE-SNAPSHOT-CORRUPT] + 废弃（全量 prefill 兜底）
             if (!ValidateSnapshot(key)) return false;
 
-            var resp = await _backend.SlotRestoreAsync(slot, $"{Sanitize(key)}.bin", CancellationToken.None);
+            var resp = await _backend.SlotRestoreAsync(slot, $"{Sanitize(key)}.bin", restoreCts.Token);
             return resp.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException)
+        {
+            _log?.Invoke($"[KV-CACHE-TIMEOUT] restore 超时：key={key}");
+            return false;
         }
         finally
         {
-            sem.Release();
+            try { sem.Release(); } catch { /* 已释放或异常时忽略 */ }
         }
     }
 
-    /// <summary>擦除槽位 KV（不删缓存文件）。</summary>
+    /// <summary>擦除槽位 KV（不删缓存文件）。30s 超时兜底：防后端 /slots/erase 不响应导致清空缓存/驱逐挂起。</summary>
     public async Task<bool> EraseAsync(int slot)
     {
-        var resp = await _backend.SlotEraseAsync(slot, CancellationToken.None);
-        return resp.IsSuccessStatusCode;
+        using var eraseCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            var resp = await _backend.SlotEraseAsync(slot, eraseCts.Token);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException)
+        {
+            _log?.Invoke($"[KV-CACHE-TIMEOUT] erase 超时：slot{slot}");
+            return false;
+        }
     }
 
     /// <summary>
@@ -278,6 +319,7 @@ public sealed class KvCacheManager
     public async Task<int> ClearAllAsync()
     {
         // AH-10：等待在途 save 结束（最长 ~5s），再执行删除
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         for (int i = 0; i < 50; i++)
         {
             Task[] inflight;
@@ -287,6 +329,7 @@ public sealed class KvCacheManager
                 inflight = _inflightSaves.Values.ToArray();
             }
             try { await Task.WhenAll(inflight); } catch { /* save 失败不影响清空 */ }
+            if (cts.Token.IsCancellationRequested) break; // 超时保护：最多等 5s
         }
 
         int deleted = 0;

@@ -46,7 +46,7 @@ public class GatewayRewriteBaselineTests
     {
         var obj = Parse(@"{""messages"":[]}");
         Assert.True(ThinkingMode.InjectNSlots(obj, 3));
-        Assert.Equal(3, obj["n_slots"]![0].AsValue().GetValue<int>());
+        Assert.Equal(3, obj["n_slots"]![0]!.AsValue().GetValue<int>());
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public class GatewayRewriteBaselineTests
     {
         var obj = Parse(@"{""n_slots"":[1],""messages"":[]}");
         Assert.False(ThinkingMode.InjectNSlots(obj, 3)); // 已有 n_slots：不覆盖
-        Assert.Equal(1, obj["n_slots"]![0].AsValue().GetValue<int>());
+        Assert.Equal(1, obj["n_slots"]![0]!.AsValue().GetValue<int>());
     }
 
     // ---------- InjectThinkingMode（DOM 版） ----------

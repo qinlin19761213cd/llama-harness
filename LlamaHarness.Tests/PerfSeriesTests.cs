@@ -86,7 +86,7 @@ public class PerfSeriesTests
     }
 
     [Fact]
-    public void ConcurrentAdds_NoException_CountBounded()
+    public async Task ConcurrentAdds_NoException_CountBounded()
     {
         var s = new PerfSeries<int>(64);
         var tasks = new System.Threading.Tasks.Task[8];
@@ -98,7 +98,7 @@ public class PerfSeriesTests
                 for (int i = 0; i < 500; i++) s.Add(seed * 1000 + i);
             });
         }
-        System.Threading.Tasks.Task.WaitAll(tasks);
+        await System.Threading.Tasks.Task.WhenAll(tasks);
         Assert.Equal(64, s.Count); // 并发写入后仍在容量上限内
         var snap = s.Snapshot();
         Assert.Equal(64, snap.Length);

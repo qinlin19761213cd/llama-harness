@@ -12,8 +12,9 @@ namespace LlamaHarness;
 /// </summary>
 public static class RequestProcessor
 {
-    /// <summary>读取请求体字节（仅 POST；GET 返回 null）。AH-5：超 maxBytes 抛 InvalidDataException（调用方回 413，防本机恶意大 body 内存 DoS）。</summary>
-    public static async Task<byte[]?> ReadRequestBodyAsync(HttpListenerRequest req, int maxBytes)
+    /// <summary>读取请求体字节（仅 POST；GET 返回 null）。AH-5：超 maxBytes 抛 InvalidDataException（调用方回 413，防本机恶意大 body 内存 DoS）。
+    /// L-05：新增 cancellationToken 参数，防 Slowloris 攻击导致线程永久阻塞。</summary>
+    public static async Task<byte[]?> ReadRequestBodyAsync(HttpListenerRequest req, int maxBytes, CancellationToken cancellationToken = default)
     {
         if (!string.Equals(req.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
             return null;
@@ -25,7 +26,7 @@ public static class RequestProcessor
         long total = 0;
         while (true)
         {
-            int n = await req.InputStream.ReadAsync(buf, 0, buf.Length);
+            int n = await req.InputStream.ReadAsync(buf, 0, buf.Length, cancellationToken);
             if (n <= 0) break;
             total += n;
             if (total > maxBytes)

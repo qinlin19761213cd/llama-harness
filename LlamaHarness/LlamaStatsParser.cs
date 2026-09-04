@@ -35,7 +35,7 @@ public sealed class LlamaStatsParser
 
     private readonly object _gate = new();
     private readonly Dictionary<int, RoundStats> _byTask = new();
-    private readonly List<int> _taskOrder = new(); // task ID 插入顺序，用于按序淘汰最旧轮次
+    private readonly LinkedList<int> _taskOrder = new(); // M-14 修复：使用 LinkedList 替代 List，RemoveFirst() 为 O(1)
     private long _idCounter;
     // f_sim_best 出现在 print_timing 之前的槽位选择行（get_availabl），归属给下一个新 task
     private double? _pendingFsim;
@@ -95,7 +95,7 @@ public sealed class LlamaStatsParser
                 {
                     round = new RoundStats { Id = ++_idCounter, TaskId = taskId, Time = DateTime.Now };
                     _byTask[taskId] = round;
-                    _taskOrder.Add(taskId);
+                    _taskOrder.AddLast(taskId);
                     // 新 task 继承暂存的 f_sim_best（时间线上它出现在本请求启动之前）
                     round.FSimBest = _pendingFsim;
                     _pendingFsim = null;
@@ -103,8 +103,8 @@ public sealed class LlamaStatsParser
                     // 超出上限：按插入顺序丢弃最旧的轮次
                     while (_taskOrder.Count > MaxRounds)
                     {
-                        int old = _taskOrder[0];
-                        _taskOrder.RemoveAt(0);
+                        int old = _taskOrder.First!.Value;
+                        _taskOrder.RemoveFirst();
                         evicted ??= new List<RoundStats>();
                         evicted.Add(_byTask[old]);
                         _byTask.Remove(old);

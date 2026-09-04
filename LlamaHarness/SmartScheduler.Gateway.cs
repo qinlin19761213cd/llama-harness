@@ -112,11 +112,26 @@ public partial class SmartScheduler
                 }
                 else
                 {
-                    // C-005 降级：非法 JSON 走字符串级改写；改写失败透传原始请求，禁止下发损坏 JSON
+                    // P1-H-02 修复：正则改写后增加二次验证，确保改写后的 body 仍为合法 JSON
                     var rewritten = RequestProcessor.EnsureStreamTrue(body);
                     if (rewritten != null)
-                        bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
-                    Log?.Invoke("警告：强制流式改写失败（请求体不是合法 JSON），已透传原始请求。");
+                    {
+                        try
+                        {
+                            using var doc = System.Text.Json.JsonDocument.Parse(rewritten);
+                            bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
+                            Log?.Invoke("警告：强制流式改写成功（正则降级路径），已验证 JSON 合法性。");
+                        }
+                        catch
+                        {
+                            // 改写后仍非合法 JSON：透传原始请求，禁止下发损坏数据
+                            Log?.Invoke($"警告：强制流式正则改写后仍非合法 JSON，透传原始请求。body={body.Length}");
+                        }
+                    }
+                    else
+                    {
+                        Log?.Invoke("警告：强制流式改写失败（请求体不是合法 JSON），已透传原始请求。");
+                    }
                 }
             }
             else

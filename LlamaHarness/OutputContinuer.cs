@@ -184,24 +184,26 @@ public static class OutputContinuer
         int len = 0;          // buf 中总字节数
         int lineStart = 0;    // 当前未处理行的起始偏移
         int scanFrom = 0;     // 下一轮扫描起点（上次扫描到的位置）
-        while (true)
+        try
         {
-            // AH-3：流式读 idle 超时看门狗——后端假死（长期无字节）时不再无限挂起。
-            // 每轮重建 CTS：读到数据即重置计时；超时抛 TimeoutException 由上层记录告警并断开（不触发自动崩溃恢复，避免误杀长思考）。
-            using var readCts = new CancellationTokenSource(BackendIdleTimeoutMs);
-            int n;
-            try
+            while (true)
             {
-                n = await stream.ReadAsync(chunk, readCts.Token);
-            }
-            catch (OperationCanceledException) when (!readCts.IsCancellationRequested)
-            {
-                throw; // 外部取消（非本看门狗超时），原样上抛
-            }
-            catch (OperationCanceledException)
-            {
-                throw new TimeoutException("后端流式响应空闲超时（疑似后端假死，长期无数据）。");
-            }
+                // AH-3：流式读 idle 超时看门狗——后端假死（长期无字节）时不再无限挂起。
+                // 每轮重建 CTS：读到数据即重置计时；超时抛 TimeoutException 由上层记录告警并断开（不触发自动崩溃恢复，避免误杀长思考）。
+                using var readCts = new CancellationTokenSource(BackendIdleTimeoutMs);
+                int n;
+                try
+                {
+                    n = await stream.ReadAsync(chunk, readCts.Token);
+                }
+                catch (OperationCanceledException) when (!readCts.IsCancellationRequested)
+                {
+                    throw; // 外部取消（非本看门狗超时），原样上抛
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new TimeoutException("后端流式响应空闲超时（疑似后端假死，长期无数据）。");
+                }
             if (n <= 0) break;
             if (len + n > buf.Length)
             {
@@ -371,6 +373,12 @@ public static class OutputContinuer
 
         // 无 finish_reason chunk：见过 [DONE] = 正常结束；否则 = 流中断（崩溃迹象）
         return sawDone ? RoundOutcome.Normal : RoundOutcome.Aborted;
+        }
+        finally
+        {
+            // AH-4 修复：超时/异常路径下确保关闭响应，防止客户端连接泄漏
+            try { outResp.Close(); } catch { /* 已关闭或异常时忽略 */ }
+        }
     }
 
     /// <summary>非流式续接：读完整 JSON 响应；finish_reason=length 时循环续接；末轮归一化 finish_reason=stop + 合并 usage。</summary>

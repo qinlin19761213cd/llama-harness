@@ -23,6 +23,9 @@ public partial class MainForm : Form
     private string? _perfSessionId; // v2.22 可观测：当前 perf 会话 sid（进程级 UUID，perf.log 会话边界锚点）
     private readonly MainFormPresenter _presenter;
 
+    // M-08/M-09 修复：保存 KvEvents/SchedEvents 处理器引用
+    private Action<PerfEvent>? _kvEventsHandler;
+    private Action<PerfEvent>? _schedEventsHandler;
 
     public MainForm()
     {
@@ -75,8 +78,10 @@ public partial class MainForm : Form
 
         PerfLog.Start(); // 性能日志写入器（独立直写 perf.log，5MB×3 轮切）
         _perfSessionId = PerfLog.StartSession("2.22"); // v2.22 会话边界（跨会话/跨版本对比锚点）
-        _scheduler.KvEvents.Completed += e => PerfLog.LogEvent("kv", e);   // v2.22 kv 事件行
-        _scheduler.SchedEvents.Completed += e => PerfLog.LogEvent("sched", e); // v2.22 sched 事件行
+        _kvEventsHandler = e => PerfLog.LogEvent("kv", e);   // v2.22 kv 事件行
+        _schedEventsHandler = e => PerfLog.LogEvent("sched", e); // v2.22 sched 事件行
+        _scheduler.KvEvents.Completed += _kvEventsHandler;
+        _scheduler.SchedEvents.Completed += _schedEventsHandler;
 
         // 性能采样器：常驻后台（1s 轻量 + 5s 慢指标），随应用生命周期启停（v2.21）
         _perfSampler.Start();
@@ -181,7 +186,11 @@ public partial class MainForm : Form
         SyncConfigFromUi();
         if (!_config.Save(out string? err))
             AppendLog($"警告：配置保存失败：{err}");
-        _perfSampler.Dispose(); // 停止后台采样（Step2 接线）
+        _presenter.DetachScheduler(); // M-08/M-09：取消订阅调度器事件，防止事件泄漏
+        // M-08/M-09：取消订阅 KvEvents/SchedEvents
+        if (_kvEventsHandler != null) _scheduler.KvEvents.Completed -= _kvEventsHandler;
+        if (_schedEventsHandler != null) _scheduler.SchedEvents.Completed -= _schedEventsHandler;
+        _perfSampler.Dispose(); // 停止后台采样（Step 接线）
         _perfMonitor.Shutdown(); // 停止监控页定时器与事件订阅（v2.21）
         if (_perfSessionId != null) { PerfLog.EndSession(_perfSessionId); _perfSessionId = null; } // v2.22 会话结束边界
         PerfLog.Stop(); // 关闭性能日志写入器（Flush 后释放文件）
@@ -209,6 +218,14 @@ public partial class MainForm : Form
     {
         if (!IsHandleCreated) return;
         BeginInvoke(action);
+    }
+
+    /// <summary>同步阻塞版 InvokeOnUi：在 UI 线程执行 action 并等待完成，返回值。用于需要从后台线程调用 UI 方法并获取返回值的场景。</summary>
+    internal T InvokeOnUiSync<T>(Func<T> func)
+    {
+        if (!IsHandleCreated) throw new InvalidOperationException("Form handle not created.");
+        // Invoke 是同步阻塞的，会等待 action 在 UI 线程执行完成
+        return (T)Invoke(func);
     }
 
     /// <summary>清空缓存执行期禁用/恢复按钮。</summary>

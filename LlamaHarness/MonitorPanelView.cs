@@ -233,6 +233,11 @@ public sealed class MonitorPanelView : UserControl
                 $"内存: {used:F1}/{total:F1} GB\n" +
                 $"显存: {vram ?? "—（未检测到 nvidia-smi）"}");
         }
+        catch (Exception ex)
+        {
+            // async void 异常捕获：防止 UI 线程未处理异常导致进程崩溃
+            _appendLog?.Invoke($"[MONITOR-ERROR] 刷新资源监控失败：{ex.Message}");
+        }
         finally
         {
             Interlocked.Exchange(ref _metricsBusy, 0);

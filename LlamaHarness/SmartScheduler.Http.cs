@@ -85,7 +85,18 @@ public partial class SmartScheduler
                     return;
                 }
             }
-            if (got && ctx != null) _ = HandleRequestAsync(ctx); // 仅成功取到请求时处理；重试后回到循环顶部
+            if (got && ctx != null) _ = HandleRequestWithCatchAsync(ctx); // 仅成功取到请求时处理；重试后回到循环顶部
+        }
+    }
+
+    /// <summary>HandleRequestAsync 的异常包装器，防止 fire-and-forget 导致未处理异常。</summary>
+    private async Task HandleRequestWithCatchAsync(HttpListenerContext ctx)
+    {
+        try { await HandleRequestAsync(ctx); }
+        catch (Exception ex)
+        {
+            // fire-and-forget 路径：异常必须被捕获并记录，否则会被 .NET 运行时终结进程
+            Log?.Invoke($"请求处理未捕获异常：{ex.Message}");
         }
     }
 
@@ -140,7 +151,13 @@ public partial class SmartScheduler
         }
 
         int cur = Interlocked.Increment(ref _inflight);
-        if (cur > Volatile.Read(ref _inflightPeak)) Volatile.Write(ref _inflightPeak, cur); // C-102 峰值记录
+        // C-102 峰值记录：使用 CAS 循环避免 TOCTOU 竞态
+        int peak;
+        do
+        {
+            peak = Volatile.Read(ref _inflightPeak);
+            if (cur <= peak) break;
+        } while (Interlocked.CompareExchange(ref _inflightPeak, cur, peak) != peak);
         // 在途任务明细登记（v2.18 状态栏服务阶段卡片）：方法 + 路径 + 亲和应用名（未知请求 App 为 null）
         var affTask = _affinity;
         string? taskKey = affTask?.GetAffinityKey(req.Headers);

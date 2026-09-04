@@ -218,7 +218,8 @@ public sealed class SlotAffinity
         if (slot < 0)
         {
             // 找可驱逐目标（非强占）
-            var lruKey = _bindings.Where(kv => !kv.Value.Preemptive).OrderBy(kv => kv.Value.LastActive).FirstOrDefault().Key;
+            var lruEntry = _bindings.Where(kv => !kv.Value.Preemptive).OrderBy(kv => kv.Value.LastActive).FirstOrDefault();
+            var lruKey = lruEntry.Value.Equals(default(Binding)) ? null : lruEntry.Key;
             if (!string.IsNullOrEmpty(lruKey))
             {
                 slot = _bindings[lruKey].Slot;
@@ -250,7 +251,23 @@ public sealed class SlotAffinity
                 }
                 else
                 {
-                    return (null, null, -1, false); // 非强占新 key + 全槽强占 → 排队
+                    // L-03 修复：非强占新 key + 全槽强占 → 降级策略：强制解锁最旧的 Tool 链锁定
+                    var oldestToolKey = _bindings.Where(kv => kv.Value.Preemptive && _toolLockedKeys.Contains(kv.Key))
+                                                 .OrderBy(kv => kv.Value.LastActive).FirstOrDefault().Key;
+                    if (!string.IsNullOrEmpty(oldestToolKey))
+                    {
+                        slot = _bindings[oldestToolKey].Slot;
+                        evictedSlot = slot.Value;
+                        evictedKvCache = _bindings[oldestToolKey].KvCache;
+                        _bindings.Remove(oldestToolKey);
+                        _toolLockedKeys.Remove(oldestToolKey);
+                        _evictCount++; // v2.22 可观测：Tool 链降级驱逐计数
+                        evicted = oldestToolKey;
+                    }
+                    else
+                    {
+                        return (null, null, -1, false); // 非强占新 key + 全槽强占（无 Tool 链可降级）→ 排队
+                    }
                 }
             }
         }
