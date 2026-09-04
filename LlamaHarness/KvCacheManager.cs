@@ -21,6 +21,8 @@ public sealed class KvCacheManager
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly Dictionary<string, Task> _inflightSaves = new(StringComparer.OrdinalIgnoreCase);
+    // A2 修复：复合键必须含 slot，否则多 slot 并发保存同一 key 会静默复用/移除错误的 in-flight Task
+    private static string SaveKey(int slot, string key) => slot + "#" + key;
     /// <summary>per-slot save/restore 串行闸（AH-23：同一槽位并发 /slots/save 会干扰 llama-server 槽位状态机，串行化消除竞争）。</summary>
     private readonly SemaphoreSlim[] _slotSems;
 
@@ -28,6 +30,9 @@ public sealed class KvCacheManager
     /// <summary>KV Cache 索引路径：项目目录下 config/kv_cache_index.json。</summary>
     private const int StaleEntryDays = 30;
     private static readonly string IndexPath = AppPaths.KvCacheIndexJson;
+    /// <summary>P2-5：缓存目录磁盘占用上限（1 GB）。SaveAsync 结束后台触发 LRU 清理，
+    /// 防长期运行后无上限累积旧 .bin 撑爆磁盘。</summary>
+    private const long MaxCacheBytes = 1L << 30;
 
     /// <summary>key → (slot, savedAt, nTokens, sizeBytes)。</summary>
     private readonly Dictionary<string, CacheEntry> _index = new(StringComparer.OrdinalIgnoreCase);
@@ -112,14 +117,25 @@ public sealed class KvCacheManager
     /// </summary>
     public Task SaveAsync(int slot, string key, CancellationToken ct = default)
     {
+        ValidateSlot(slot);
         lock (_gate)
         {
-            if (_inflightSaves.TryGetValue(key, out var existing))
-                return existing; // 复用进行中的 save
+            if (_inflightSaves.TryGetValue(SaveKey(slot, key), out var existing))
+                return existing; // 复用同一 slot 上同 key 进行中的 save
             var task = DoSaveAsync(slot, key, ct);
-            _inflightSaves[key] = task;
+            // P2-7：写入顺序在 lock 内原子完成——TryGetValue → 未命中 → 创建 Task → 写入 map → return
+            // 全过程共享 _gate，其他线程要么看到"未命中并等待"，要么看到"命中并复用"，
+            // 不会出现"map 已被清掉但返回的是旧 task"的窗口。Task 完成后由 DoSaveAsync.finally 显式移除。
+            _inflightSaves[SaveKey(slot, key)] = task;
             return task;
         }
+    }
+
+    /// <summary>slot 上下界校验（B-3 修复）：负数/越界必须显式失败，禁止静默取模。</summary>
+    private void ValidateSlot(int slot)
+    {
+        if (slot < 0 || slot >= _slotCount)
+            throw new ArgumentOutOfRangeException(nameof(slot), slot, $"slot 必须在 [0, {_slotCount}) 内，实际 {slot}");
     }
 
     private async Task DoSaveAsync(int slot, string key, CancellationToken ct)
@@ -130,24 +146,27 @@ public sealed class KvCacheManager
         saveTimeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
         var effCt = saveTimeoutCts.Token;
 
-        var sem = _slotSems[Math.Max(0, slot) % _slotSems.Length];
+        var sem = _slotSems[slot];
         bool held = false;
         try
         {
             await sem.WaitAsync(effCt); // AH-23：同槽 save 串行（防并发 /slots/save 干扰槽位状态机）
             held = true;
+            // P2-6：文件名不含 slot 编号——依赖"每 key 由亲和路由绑定固定 slot"的上层不变量（Pipeline 侧
+            // _savedKeysThisRun 单 key 去重）保证同名 .bin 不被并发覆写；若上层引入同 key 多 slot 并行 save，
+            // 必须在此把文件名改为 `slot{slot}_{Sanitize(key)}.bin` 并同步 Verify/Restore 侧路径。
             var resp = await _backend.SlotSaveAsync(slot, $"{Sanitize(key)}.bin", effCt);
             var text = await resp.Content.ReadAsStringAsync();
             if (resp.IsSuccessStatusCode)
             {
-                // 解析响应：n_saved / n_written
+                // 解析响应：n_saved / n_written（P2-2：ValueKind 防御，字段类型变化不抛）
                 int nSaved = 0, nWritten = 0;
                 try
                 {
                     using var doc = JsonDocument.Parse(text);
                     var root = doc.RootElement;
-                    if (root.TryGetProperty("n_saved", out var ns)) nSaved = ns.GetInt32();
-                    if (root.TryGetProperty("n_written", out var nw)) nWritten = nw.GetInt32();
+                    if (root.TryGetProperty("n_saved", out var ns) && ns.ValueKind == JsonValueKind.Number && ns.TryGetInt32(out var nsv)) nSaved = nsv;
+                    if (root.TryGetProperty("n_written", out var nw) && nw.ValueKind == JsonValueKind.Number && nw.TryGetInt32(out var nww)) nWritten = nww;
                 }
                 catch { /* 响应格式变化：忽略 */ }
                 RecordSave(key, slot, nSaved, nWritten);
@@ -167,10 +186,16 @@ public sealed class KvCacheManager
         finally
         {
             if (held) sem.Release();
+            // P2-1：显式把 save 从 Pending 置为 Done——即从 _inflightSaves 移除条目。
+            // finally 覆盖全部异常分支：正常路径、HTTP 失败 throw、OCE 重抛、下游非 OCE 异常（如 JSON/元数据异常）均会执行到此处，
+            // 保证不会出现"任务已终态但 map 仍挂着旧 Task"的窗口（SaveAsync 幂等读取时能拿到的都是真正进行中的 Task）。
             lock (_gate)
             {
-                _inflightSaves.Remove(key);
+                // A2：按 (slot, key) 移除，防误删同一 key 但不同 slot 的在途 save
+                _inflightSaves.Remove(SaveKey(slot, key));
             }
+            // P2-5：save 结束后异步触发磁盘配额 LRU 清理（fire-and-forget，不阻塞主流程）
+            _ = Task.Run(() => TrimToQuota());
         }
     }
 
@@ -251,14 +276,17 @@ public sealed class KvCacheManager
     /// <summary>
     /// 恢复 {key}.bin 到槽位（restore 前检查 save 是否完成）。
     /// 若 key 正在 save 中，等待其完成后再 restore。
+    /// P2-8：跨 slot 的在途 save 与本 slot restore 无直接依赖，不做等待（避免不同 slot 互相阻塞）。
     /// </summary>
     public async Task<bool> RestoreAsync(int slot, string key)
     {
+        ValidateSlot(slot);
         // 等待进行中的 save 完成（防 save/restore 竞态）
         Task? saveTask = null;
         lock (_gate)
         {
-            if (_inflightSaves.TryGetValue(key, out var t)) saveTask = t;
+            // A2：仅等待同 slot 同 key 的在途 save（跨 slot 的 save 与本 slot restore 无直接依赖）
+            if (_inflightSaves.TryGetValue(SaveKey(slot, key), out var t)) saveTask = t;
         }
         if (saveTask != null)
         {
@@ -274,11 +302,13 @@ public sealed class KvCacheManager
         }
 
         // AH-23：同槽 save/restore 互斥（防 restore 与并发 save 竞争同一槽位状态）
-        var sem = _slotSems[Math.Max(0, slot) % _slotSems.Length];
+        var sem = _slotSems[slot];
+        bool held = false;
         using var restoreCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
             await sem.WaitAsync(restoreCts.Token);
+            held = true;
             // restore 前置校验：快照文件/元数据损坏 → [EDGE-CASE-SNAPSHOT-CORRUPT] + 废弃（全量 prefill 兜底）
             if (!ValidateSnapshot(key)) return false;
 
@@ -292,13 +322,14 @@ public sealed class KvCacheManager
         }
         finally
         {
-            try { sem.Release(); } catch { /* 已释放或异常时忽略 */ }
+            if (held) { try { sem.Release(); } catch { /* 已释放或异常时忽略 */ } }
         }
     }
 
     /// <summary>擦除槽位 KV（不删缓存文件）。30s 超时兜底：防后端 /slots/erase 不响应导致清空缓存/驱逐挂起。</summary>
     public async Task<bool> EraseAsync(int slot)
     {
+        ValidateSlot(slot);
         using var eraseCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
@@ -390,13 +421,18 @@ public sealed class KvCacheManager
             if (root.ValueKind != JsonValueKind.Object) return;
             foreach (var prop in root.EnumerateObject())
             {
+                // P2-2：字段类型变化 / 缺失统一回退默认值（缺字段返回 0，不抛异常），
+                // 兼容旧版索引、字段被外部修改、Json 类型漂移等边界。
                 int slot = -1;
                 string savedAt = "";
                 int nTokens = 0, sizeBytes = 0;
-                if (prop.Value.TryGetProperty("slot", out var s)) slot = s.GetInt32();
-                if (prop.Value.TryGetProperty("savedAt", out var sa)) savedAt = sa.GetString() ?? "";
-                if (prop.Value.TryGetProperty("nTokens", out var nt)) nTokens = nt.GetInt32();
-                if (prop.Value.TryGetProperty("sizeBytes", out var sb)) sizeBytes = sb.GetInt32();
+                if (prop.Value.ValueKind == JsonValueKind.Object)
+                {
+                    if (prop.Value.TryGetProperty("slot", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt32(out var sv)) slot = sv;
+                    if (prop.Value.TryGetProperty("savedAt", out var sa)) savedAt = sa.ValueKind == JsonValueKind.String ? (sa.GetString() ?? "") : "";
+                    if (prop.Value.TryGetProperty("nTokens", out var nt) && nt.ValueKind == JsonValueKind.Number && nt.TryGetInt32(out var ntv)) nTokens = ntv;
+                    if (prop.Value.TryGetProperty("sizeBytes", out var sb) && sb.ValueKind == JsonValueKind.Number && sb.TryGetInt32(out var sbv)) sizeBytes = sbv;
+                }
                 if (!DateTime.TryParse(savedAt, out var dt)) dt = DateTime.Now.AddDays(-StaleEntryDays);
                 _index[prop.Name] = new CacheEntry { Slot = slot, SavedAt = dt, NTokens = nTokens, SizeBytes = sizeBytes };
             }
@@ -411,19 +447,24 @@ public sealed class KvCacheManager
     {
         try
         {
-            var obj = new System.Text.Json.Nodes.JsonObject();
-            foreach (var kv in _index)
+            string json;
+            lock (_gate)
             {
-                obj[kv.Key] = new System.Text.Json.Nodes.JsonObject
+                var obj = new System.Text.Json.Nodes.JsonObject();
+                foreach (var kv in _index)
                 {
-                    ["slot"] = kv.Value.Slot,
-                    ["savedAt"] = kv.Value.SavedAt.ToString("o"),
-                    ["nTokens"] = kv.Value.NTokens,
-                    ["sizeBytes"] = kv.Value.SizeBytes
-                };
+                    obj[kv.Key] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["slot"] = kv.Value.Slot,
+                        ["savedAt"] = kv.Value.SavedAt.ToString("o"),
+                        ["nTokens"] = kv.Value.NTokens,
+                        ["sizeBytes"] = kv.Value.SizeBytes
+                    };
+                }
+                json = obj.ToJsonString();
             }
             AppPaths.EnsureConfigDir();
-            File.WriteAllText(IndexPath, obj.ToJsonString());
+            File.WriteAllText(IndexPath, json);
         }
         catch
         {
@@ -431,10 +472,119 @@ public sealed class KvCacheManager
         }
     }
 
-    /// <summary>key 转文件名安全字符（防路径注入）。</summary>
+    /// <summary>P2-5：磁盘配额 LRU 清理。当缓存目录占用 &gt; MaxCacheBytes 时，按 SavedAt 升序
+    /// 删除最旧的 .bin（连带 .meta.json 与索引条目），直至占用回落到阈值以下。
+    /// 由 DoSaveAsync 完成路径 fire-and-forget 触发；单线程执行、异常吞掉，不阻塞主流程。</summary>
+    private void TrimToQuota()
+    {
+        try
+        {
+            if (!Directory.Exists(_cachePath)) return;
+            long totalBytes = 0;
+            var files = Directory.GetFiles(_cachePath, "*.bin");
+            foreach (var f in files)
+            {
+                try { totalBytes += new FileInfo(f).Length; } catch { /* 单文件 stat 失败忽略 */ }
+            }
+            if (totalBytes <= MaxCacheBytes) return;
+
+            // 按索引 SavedAt 升序（最旧优先）；索引缺失的 .bin 视为最旧（fallback 用文件系统 LastWriteTimeUtc）
+            var indexed = new List<(string Path, DateTime At)>();
+            var orphans = new List<(string Path, DateTime At)>();
+            foreach (var f in files)
+            {
+                var key = Path.GetFileNameWithoutExtension(f);
+                DateTime at = DateTime.MinValue;
+                bool hasIdx;
+                lock (_gate)
+                {
+                    hasIdx = _index.TryGetValue(key, out var e);
+                    if (hasIdx) at = e.SavedAt;
+                }
+                if (!hasIdx)
+                {
+                    try { at = new FileInfo(f).LastWriteTimeUtc; } catch { }
+                }
+                if (hasIdx) indexed.Add((f, at)); else orphans.Add((f, at));
+            }
+            // 最旧优先：orphans 先删（无索引 = 遗留残留），再按 SavedAt 升序
+            var all = orphans.Concat(indexed).OrderBy(x => x.At).ToList();
+
+            int deleted = 0;
+            foreach (var (path, _) in all)
+            {
+                if (totalBytes <= MaxCacheBytes) break;
+                long len = 0;
+                try
+                {
+                    var fi = new FileInfo(path);
+                    if (fi.Exists)
+                    {
+                        len = fi.Length;
+                        fi.Delete();
+                    }
+                }
+                catch { /* 单文件删除失败忽略 */ }
+                // 同 key 元数据也删
+                try
+                {
+                    var meta = Path.ChangeExtension(path, ".meta.json");
+                    if (File.Exists(meta)) File.Delete(meta);
+                }
+                catch { /* 忽略 */ }
+                var key = Path.GetFileNameWithoutExtension(path);
+                lock (_gate) _index.Remove(key);
+                totalBytes -= len;
+                deleted++;
+            }
+            if (deleted > 0)
+            {
+                SaveIndex();
+                _log?.Invoke($"[KV-QUOTA] 缓存目录超过 {MaxCacheBytes / (1L << 20)} MB，按 LRU 清理 {deleted} 个旧快照");
+            }
+        }
+        catch
+        {
+            // 配额清理是尽力而为；异常不影响主流程
+        }
+    }
+
+    /// <summary>key 转文件名安全字符（防路径注入）。B-2 修复：空串/全非法字符必须显式失败，
+    /// 否则不同业务 key 会全部落到同一个 `.bin`，导致快照互相覆盖、缓存污染。
+    /// P2-3：控制字符（\u0000-\u001F）、Unicode 类别 Cf（格式字符，如 ZWJ/BOM）以及字节长度上限一并过滤，
+    /// 防 Windows/Linux 路径穿越 / NTFS 保留名 / 超长文件名被截断后撞名。</summary>
     private static string Sanitize(string key)
     {
+        if (string.IsNullOrEmpty(key))
+            throw new ArgumentException("key 不能为空", nameof(key));
         var invalid = Path.GetInvalidFileNameChars();
-        return new string(key.Where(c => !invalid.Contains(c) && c != '/' && c != '\\').ToArray());
+        // P2-3：控制字符（Cc 类，含 \0-\x1F 与 DEL 0x7F）+ Unicode Cf（Zero Width Joiner、BOM、Directional Mark 等）
+        char[] filtered = new char[key.Length];
+        int w = 0;
+        for (int i = 0; i < key.Length; i++)
+        {
+            var c = key[i];
+            if (invalid.Contains(c) || c == '/' || c == '\\') continue;
+            if (c < 0x20 || c == 0x7F) continue;                    // Cc 控制字符
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format) continue; // Cf
+            filtered[w++] = c;
+        }
+        var result = new string(filtered, 0, w);
+        if (result.Length == 0)
+            throw new ArgumentException($"key '{key}' 全部为非法字符，无法作为快照文件名", nameof(key));
+        // P2-3：字节长度上限 128（UTF-8 计字节，非字符数），超出按字节截断
+        // —— 防超长 key 撑爆文件系统名长度限制（NTFS 255 UTF-16 code units，但为跨平台留余量）
+        const int MaxBytes = 128;
+        int used = 0;
+        int cut = result.Length;
+        for (int i = 0; i < result.Length; i++)
+        {
+            int cb = Encoding.UTF8.GetByteCount(result.AsSpan(i, 1));
+            if (used + cb > MaxBytes) { cut = i; break; }
+            used += cb;
+        }
+        if (cut < result.Length)
+            result = result.Substring(0, Math.Max(1, cut)); // 保底不空
+        return result;
     }
 }

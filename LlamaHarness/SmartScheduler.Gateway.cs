@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using ThinkingModeHelper = LlamaHarness.ThinkingMode;
 
 namespace LlamaHarness;
@@ -55,6 +56,13 @@ public partial class SmartScheduler
             }
             if (effortFix != null)
                 Log?.Invoke($"思考参数清洗：{effortFix}。");
+
+            // P2 修复项 3：剥离客户端 messages 里携带的 <thinking>...</thinking> 标签
+            // —— Qwen3/DashScope 客户端在思考轮次会把上轮的 <thinking> 输出回填到 assistant.content 里，
+            // 逐轮累积会把 prompt 撑到 context window 上限；半截标签（跨行/嵌套/流式中断）也会污染 token 预算。
+            // 使用正则做闭合标签匹配（非贪婪 + 跨行 + 忽略大小写），覆盖跨行/嵌套（最外对）/半截开头三种场景。
+            if (StripThinkingTags(root))
+                Log?.Invoke("[THINKING] 已从 messages 中剥离客户端携带的 <thinking> 标签（防跨轮累积撑爆 context window）。");
         }
 
         // 槽位亲和路由（单槽/多槽均启用）：指纹绑定 + 注入 n_slots 固定槽位；槽忙时 llama.cpp 原生排队，不跨槽漂移
@@ -75,7 +83,8 @@ public partial class SmartScheduler
             if (!ok)
             {
                 Log?.Invoke($"Token Guard 拒绝：{note}");
-                RequestProcessor.WriteError(ctx, 400, note ?? "上下文超长");
+                // P2 修复项 7：Token Guard 拒绝统一走 WriteErrorV2 嵌套错误格式 {"error":{"code":GatewayErrorCodes.ContextOverflow,"message":"..."}}
+                WriteErrorV2(ctx, 400, GatewayErrorCodes.ContextOverflow, note ?? "上下文超长");
                 return null;
             }
             if (note != null) Log?.Invoke(note);
@@ -363,4 +372,78 @@ public partial class SmartScheduler
             return null; // 该 key 首次请求：无历史指纹可比
         }
     }
+
+    /// <summary>P2 修复项 3：<thinking> 标签剥离（闭合对 + 半截开头兜底）。
+    /// 正则语义：
+    /// - 闭合对：(?is)&lt;thinking&gt;.*?&lt;/thinking&gt; —— 非贪婪 + 跨行 + 忽略大小写，
+    ///   覆盖 &lt;thinking&gt; 跨行内容（多行推理痕迹）、以及嵌套的最外层闭合对（如 &lt;thinking&gt;A&lt;thinking&gt;B&lt;/thinking&gt;C&lt;/thinking&gt; 一次剥到最外对）。
+    /// - 半截开头：(?s)&lt;thinking&gt;.*$ —— 客户端流式中断/网络丢包导致只发出开头未闭合的情况，剥到字符串末尾。
+    /// 遍历 messages 数组中每条字符串 content（含 assistant/tool/system/user），原地改写 DOM。
+    /// 返回 true 表示至少改动了 1 处，供调用方决定是否打点日志。
+    /// 注意：仅处理纯字符串 content，不处理 multimodal content 数组（数组形式中每个 part 内的 text 字段也按字符串处理）。</summary>
+    private bool StripThinkingTags(JsonObject root)
+    {
+        bool changed = false;
+        if (!root.TryGetPropertyValue("messages", out var messagesNode) || messagesNode is not JsonArray messages)
+            return false;
+
+        // 编译期常量正则（Compile 提升重复执行性能；本次 pipeline 每请求跑一次，收益有限但成本零）
+        var closedRe = sThinkClosed;
+        var openRe = sThinkOpen;
+
+        foreach (var item in messages)
+        {
+            if (item is not JsonObject msg) continue;
+
+            // ① 简单字符串 content：直接替换（仅 JsonValue 走此分支；数组/对象型 content 走 ②，
+            //    防 GetValue<string>() 对 JsonArray 抛 "The node must be of type 'JsonValue'"）
+            if (msg.TryGetPropertyValue("content", out var contentNode)
+                && contentNode is System.Text.Json.Nodes.JsonValue cv
+                && cv.TryGetValue<string>(out var contentStr)
+                && contentStr.Contains("<thinking", StringComparison.OrdinalIgnoreCase))
+            {
+                var stripped = closedRe.Replace(contentStr, "");
+                // 若闭合对未匹配到任何一处（Length 相同），继续用半截开头正则兜底
+                if (stripped.Length == contentStr.Length)
+                    stripped = openRe.Replace(stripped, "");
+                if (stripped != contentStr)
+                {
+                    msg["content"] = stripped;
+                    changed = true;
+                }
+            }
+            // ② multimodal content 数组：{"type":"text","text":"..."} 逐元素处理
+            else if (msg.TryGetPropertyValue("content", out var contentArr) && contentArr is JsonArray parts)
+            {
+                foreach (var part in parts)
+                {
+                    if (part is not JsonObject pObj) continue;
+                    if (!pObj.TryGetPropertyValue("text", out var textNode)
+                        || textNode is not System.Text.Json.Nodes.JsonValue tv
+                        || !tv.TryGetValue<string>(out var textStr))
+                        continue;
+                    if (!textStr.Contains("<thinking", StringComparison.OrdinalIgnoreCase)) continue;
+                    var stripped = closedRe.Replace(textStr, "");
+                    if (stripped.Length == textStr.Length)
+                        stripped = openRe.Replace(stripped, "");
+                    if (stripped != textStr)
+                    {
+                        pObj["text"] = stripped;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        return changed;
+    }
+
+    /// <summary>P2 修复项 3：闭合 &lt;thinking&gt;...&lt;/thinking&gt; 标签正则（编译期常量，跨行 + 忽略大小写 + 非贪婪）。</summary>
+    private static readonly Regex sThinkClosed = new(
+        @"<thinking>.*?</thinking>",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    /// <summary>P2 修复项 3：半截 &lt;thinking&gt;... 开头正则（客户端流式中断/网络丢包时剥到末尾）。</summary>
+    private static readonly Regex sThinkOpen = new(
+        @"<thinking>.*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 }

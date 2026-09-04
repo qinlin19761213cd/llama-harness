@@ -47,7 +47,8 @@ public class AppConfig
     // 仅适用于能解析 SSE 流的客户端；标准 OpenAI SDK 客户端勿开。
     public bool ForceStream { get; set; } = false;
     /// <summary>KV Cache 保存路径（--slot-save-path）：留空 = 禁用 KV 缓存持久化。驱逐时自动 save，重绑定时自动 restore。</summary>
-    public string KvCachePath { get; set; } = "g:/temp";
+    // B-02 修复：默认改为空字符串（禁用），避免硬编码 g:/temp 盘符；用户如需 KV 缓存请在 UI 显式设置
+    public string KvCachePath { get; set; } = "";
     /// <summary>Token Guard 总开关：代理层预估算 + 裁剪，防上下文超长 400 错误。</summary>
     public bool TokenGuardEnabled { get; set; } = true;
     /// <summary>输出预留 token（为模型生成回复保留）：预算 = CtxSize ÷ Parallel − 此值 − Prompt头部开销预留。</summary>
@@ -133,6 +134,17 @@ public class AppConfig
 
     /// <summary>旧版 config.json 为 PascalCase 字段名：仅用于兼容读取；保存一律写新 snake_case 格式。</summary>
     private static readonly JsonSerializerOptions LegacyJsonOpts = new() { WriteIndented = true };
+
+    // B-01 修复：供外部（如 MainFormPresenter Export/Import）复用的 JsonOpts，
+    // 保证导出/导入与 AppConfig.Save/Load 使用完全一致的字段命名策略与枚举转换器。
+    /// <summary>导出用选项：snake_case + WriteIndented + JsonStringEnumConverter（与 Save 一致）。</summary>
+    public static System.Text.Json.JsonSerializerOptions ExportOptions => JsonOpts;
+    /// <summary>导入用选项：snake_case + JsonStringEnumConverter（不带缩进，反序列化不影响）。</summary>
+    public static readonly System.Text.Json.JsonSerializerOptions ImportOptions = new()
+    {
+        PropertyNamingPolicy = new SnakeCaseNamingPolicy(),
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
+    };
 
     /// <summary>确保 config/ 目录存在（幂等）。</summary>
     private static void EnsureConfigDir() => AppPaths.EnsureConfigDir();

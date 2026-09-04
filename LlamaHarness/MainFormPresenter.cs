@@ -165,9 +165,10 @@ public sealed class MainFormPresenter
         if (dlg.ShowDialog(_view) != DialogResult.OK) return;
         try
         {
+            // B-01 修复：与 AppConfig.Save 使用同一 JsonOpts（SnakeCaseNamingPolicy + WriteIndented），
+            // 保证导出的 json 字段名与主配置一致，且导入时可用同一 Load 兼容逻辑还原
             File.WriteAllText(dlg.FileName,
-                System.Text.Json.JsonSerializer.Serialize(_config,
-                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                System.Text.Json.JsonSerializer.Serialize(_config, AppConfig.ExportOptions));
             _view.AppendLog($"配置已保存到：{dlg.FileName}");
         }
         catch (Exception ex)
@@ -188,8 +189,27 @@ public sealed class MainFormPresenter
         if (dlg.ShowDialog(_view) != DialogResult.OK) return;
         try
         {
-            var cfg = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(dlg.FileName))
+            // B-01 修复：使用 SnakeCaseNamingPolicy 与 Save/Export 一致；
+            // 同时通过兼容探测支持旧版 PascalCase 文件（与 AppConfig.Load 行为一致）
+            var json = File.ReadAllText(dlg.FileName);
+            var cfg = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(json, AppConfig.ImportOptions)
                 ?? throw new InvalidOperationException("反序列化结果为空");
+
+            // 兼容旧版 PascalCase 导出（无 snake_case 字段时回退到默认策略重解一次）
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            bool hasSnake = doc.RootElement.TryGetProperty("parallel", out _);
+            bool hasPascal = doc.RootElement.TryGetProperty("Parallel", out _);
+            if (!hasSnake && hasPascal)
+            {
+                var legacyCfg = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(json)
+                    ?? throw new InvalidOperationException("反序列化结果为空");
+                AppConfig.Sanitize(legacyCfg);
+                _view.ApplyConfigToUi(legacyCfg);
+                _view.SyncConfigFromUi();
+                _status.RefreshThinkingLabel();
+                _view.AppendLog($"配置已载入（旧版 PascalCase 格式）：{dlg.FileName}");
+                return;
+            }
 
             AppConfig.Sanitize(cfg); // 数值兜底：与 Load 共用统一规则（集中维护，防漂移）
 

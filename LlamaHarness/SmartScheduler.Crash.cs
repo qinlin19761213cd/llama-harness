@@ -12,6 +12,12 @@ namespace LlamaHarness;
 /// </summary>
 public partial class SmartScheduler
 {
+    /// <summary>崩溃恢复 keep-alive 累计失败次数（跨实例共享，用于节流日志）。</summary>
+    private static int _keepAliveFailures;
+
+    /// <summary>上一次输出 keep-alive 失败日志的时刻（节流：1 分钟窗口内最多一条，防刷屏）。</summary>
+    private static DateTime _lastKeepAliveFailLogUtc;
+
     /// <summary>
     /// bad_alloc 崩溃自动恢复管道（三分支）：
     /// - 分支 A（服务端存活 + 客户端连接可持有）：抢 save 槽位 KV 快照 → SSE keep-alive 保活客户端
@@ -175,6 +181,9 @@ public partial class SmartScheduler
         {
             keepAliveCts.Cancel();
             try { await keepAliveTask; } catch { } // 等在途 keep-alive 写入完成再返回（调用方负责关连接）
+            // M-04 修复：显式 Dispose CTS 与 writeGate，防句柄泄漏（每次崩溃恢复都会新建这两者）
+            keepAliveCts.Dispose();
+            writeGate.Dispose();
         }
     }
 
@@ -231,39 +240,43 @@ public partial class SmartScheduler
                 log?.Invoke("重放流再次中断：本次恢复失败。");
         });
 
-    /// <summary>探测客户端连接是否存活：立即写一行 keep-alive 注释；写失败 = 客户端已断开（分支 C）。</summary>
+    /// <summary>探测客户端连接是否存活：立即写一行 keep-alive 注释；写失败 = 客户端已断开（分支 C）。
+    /// M-05 修复：门控获取超时视为"争抢"而非"断开"（重放管道可能正在写），此时重试一次并延长等待窗口。</summary>
     private static async Task<bool> ProbeClientConnectedAsync(HttpListenerResponse outResp, SemaphoreSlim writeGate)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(": keepalive\n");
-        // M-02 修复：WaitAsync 增加超时保护，避免永久阻塞；超时视为客户端已断开
-        bool acquired;
-        try
+        // 两轮等待：先短窗（覆盖 keep-alive 常态写入），若门控仍被占用则再等一次更长窗口（重放管道正在写大块数据）
+        TimeSpan[] waits = { TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30) };
+        for (int i = 0; i < waits.Length; i++)
         {
-            acquired = await writeGate.WaitAsync(TimeSpan.FromSeconds(5));
+            bool acquired;
+            try
+            {
+                acquired = await writeGate.WaitAsync(waits[i]);
+            }
+            catch
+            {
+                return false; // 等待异常（对象已释放）视为断开
+            }
+            if (!acquired)
+                continue; // 争抢（keep-alive/重放管道写入中）：延长窗口再试一次
+            try
+            {
+                await outResp.OutputStream.WriteAsync(bytes);
+                await outResp.OutputStream.FlushAsync();
+                return true;
+            }
+            catch
+            {
+                return false; // 写入失败 = 客户端已断开
+            }
+            finally
+            {
+                writeGate.Release();
+            }
         }
-        catch
-        {
-            return false;
-        }
-        if (!acquired)
-        {
-            // 写门控信号量获取超时：判定客户端已断开（调用方日志由 RunCrashRecoveryAsync 记录）
-            return false;
-        }
-        try
-        {
-            await outResp.OutputStream.WriteAsync(bytes);
-            await outResp.OutputStream.FlushAsync();
-            return true;
-        }
-        catch
-        {
-            return false; // 写入失败 = 客户端已断开
-        }
-        finally
-        {
-            writeGate.Release();
-        }
+        // 两轮均超时：门控长期被占用，保守返回断开避免死循环（调用方日志由 RunCrashRecoveryAsync 记录）
+        return false;
     }
 
     /// <summary>SSE keep-alive：每 N 秒写一行注释（客户端忽略但连接不断），直到取消或客户端断开。</summary>
@@ -294,7 +307,13 @@ public partial class SmartScheduler
         }
         catch (Exception ex)
         {
-            log?.Invoke($"keep-alive 停止：{ex.Message}");
+            // 修复7：心跳异常不允许静默吞——至少写日志并统计失败次数（1 分钟节流防刷屏）
+            int fails = Interlocked.Increment(ref _keepAliveFailures);
+            if (DateTime.UtcNow - _lastKeepAliveFailLogUtc > TimeSpan.FromMinutes(1))
+            {
+                _lastKeepAliveFailLogUtc = DateTime.UtcNow;
+                log?.Invoke($"[警告] keep-alive 异常（累计 {fails} 次）：{ex.Message}");
+            }
         }
     }
 }

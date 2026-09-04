@@ -115,6 +115,14 @@ public static class OutputContinuer
                     round++;
                     log?.Invoke($"续接触发（第 {round} 轮）：输出截断（finish_reason=length），自动续接…");
                 }
+                catch (OperationCanceledException)
+                {
+                    // A8 修复：续接请求被取消（客户端断开 / ContinuationTimeout 超时 / 停机）——非崩溃。
+                    // 向上抛（与第一轮异常路径一致）：PumpResponseAsync catch 记录"响应管道异常"并关闭连接，
+                    // 不触发崩溃恢复——避免把"取消/超时/业务错误"误判为 bad_alloc 而白白重放/重启。
+                    log?.Invoke($"续接请求取消（第 {round + 1} 轮）：超时或连接中止，保留已生成内容。");
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     log?.Invoke($"续接请求异常（第 {round + 1} 轮）：{ex.Message}");
@@ -429,6 +437,12 @@ public static class OutputContinuer
                 body = Encoding.UTF8.GetString(await r2.Content.ReadAsByteArrayAsync(cts.Token));
                 round++;
                 log?.Invoke($"续接触发（第 {round} 轮）：输出截断，自动续接…");
+            }
+            catch (OperationCanceledException)
+            {
+                // A8 修复：续接请求取消/超时（非崩溃）——以当前已生成内容收尾（break 后归一化转发），不误判崩溃
+                log?.Invoke($"续接请求取消（第 {round + 1} 轮）：超时或连接中止，以当前结果返回。");
+                break;
             }
             catch (Exception ex)
             {

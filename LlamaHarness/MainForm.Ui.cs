@@ -231,7 +231,7 @@ public partial class MainForm : Form
             TextAlign = ContentAlignment.MiddleCenter,
             Height = 44,
             ForeColor = Color.White,
-            Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 11F, FontStyle.Bold),
             BackColor = UiTheme.C_BtnHover, // #4a4a4a（默认色，原悬停色）
             FlatStyle = FlatStyle.Flat,
             TabStop = false,
@@ -319,7 +319,7 @@ public partial class MainForm : Form
     private void ShowDocInPanel(Panel container, string title, string relPath)
     {
         // 清除容器现有内容
-        container.Controls.Clear();
+        container.Controls.DisposeChildren();
         container.Visible = true;
 
         var rtb = new RichTextBox
@@ -329,7 +329,7 @@ public partial class MainForm : Form
             BackColor = UiTheme.C_TextBg,
             ForeColor = UiTheme.C_TextFg,
             BorderStyle = BorderStyle.None,
-            Font = new Font("Microsoft YaHei UI", 9F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
         };
 
         var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, relPath.Replace('/', Path.DirectorySeparatorChar)));
@@ -360,7 +360,7 @@ public partial class MainForm : Form
         var lblTitle = new Label
         {
             Text = "Llama.cpp Harness--长Agent本地私有化资源治理框架\n资源治理抬高效率下限，硬件决定性能上限!\n专为低并发、高可靠、复杂Agent任务深度优化",
-            Font = new Font("Microsoft YaHei UI", 24F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 24F, FontStyle.Bold),
             ForeColor = UiTheme.C_Primary,
             AutoSize = true,
             Dock = DockStyle.Left,
@@ -369,7 +369,7 @@ public partial class MainForm : Form
         var lblHint = new Label
         {
             Text = "槽位亲和 ·自动路由 · KV 快照自愈\n动态锁定 · 实时监控 · 告警机制",
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 10F, FontStyle.Bold),
             ForeColor = UiTheme.C_Primary,
             TextAlign = ContentAlignment.MiddleRight,
             Dock = DockStyle.Fill,
@@ -505,7 +505,7 @@ public partial class MainForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = Color.Transparent,
             ForeColor = Color.FromArgb(210, 210, 210),
-            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F, FontStyle.Bold),
             Margin = new Padding(0, 0, 0, 10),
         };
         var grid = new TableLayoutPanel
@@ -535,7 +535,7 @@ public partial class MainForm : Form
             Text = label,
             AutoSize = true,
             ForeColor = Color.White,
-            Font = new Font("Microsoft YaHei UI", 9F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0, 4, 6, 4),
         };

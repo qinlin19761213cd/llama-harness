@@ -22,6 +22,27 @@ public static class UiTheme
     public static readonly Color C_Red = Color.FromArgb(0xE7, 0x4C, 0x3C);       // #E74C3C 已停止/异常
     public static readonly Color C_Warn = Color.FromArgb(0xFF, 0x98, 0x00);      // #FF9800 过渡态（唤醒/休眠）
 
+    // —— 字体工厂（P1-1 审计修复：C1 字体泄漏族）——
+    // 静态缓存 + 进程级持有：字体种类有界（家族×字号×样式），替代各处 `new Font(...)` 每次创建不 Dispose。
+    // 共享实例安全：Font 不可变；控件 Dispose 不释放 Font（控件不拥有 Font），缓存字体随进程退出回收。
+    private static readonly Dictionary<string, Font> FontCache = new(StringComparer.Ordinal);
+    private static readonly object FontGate = new();
+
+    /// <summary>获取共享字体实例（缓存命中复用，不新建）。替代 `new Font(family, size[, style])`，消除 GDI 字体泄漏。</summary>
+    public static Font GetFont(string family, float size, FontStyle style = FontStyle.Regular)
+    {
+        var key = family + "|" + size + "|" + (int)style;
+        lock (FontGate)
+        {
+            if (!FontCache.TryGetValue(key, out var f))
+            {
+                f = new Font(family, size, style);
+                FontCache[key] = f;
+            }
+            return f;
+        }
+    }
+
     // —— 图标缓存（static/icon/*.png，缺失时降级纯文本按钮）——
     private static readonly Dictionary<string, Image> IconCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -86,7 +107,7 @@ public static class UiTheme
             BackColor = C_Btn,
             ForeColor = Color.White, // 统一白字（禁用态也保持白色，清晰）
             Enabled = enabled,
-            Font = new Font("Microsoft YaHei UI", 9F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
             TextAlign = ContentAlignment.MiddleCenter,
             ImageAlign = ContentAlignment.MiddleCenter,
             TextImageRelation = TextImageRelation.ImageBeforeText, // 图标+文字整体居中
@@ -145,7 +166,7 @@ public sealed class FlatButton : Button
         AutoSize = false,
         ForeColor = C_Title,
         BackColor = Color.Black, // 黑底容器（层次感）
-        Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+        Font = UiTheme.GetFont("Microsoft YaHei UI", 9F, FontStyle.Bold),
         TextAlign = ContentAlignment.MiddleLeft,
         Padding = new Padding(0, 4, 0, 4), // 上下内边距，形成容器包裹感
     };
@@ -161,7 +182,7 @@ public sealed class FlatButton : Button
             FlatStyle = FlatStyle.Flat,
             BackColor = C_Btn,
             ForeColor = Color.White,
-            Font = new Font("Microsoft YaHei UI", 9F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
         };
         b.FlatAppearance.BorderSize = 0; // 无边框，消除白边
         return b;
@@ -224,7 +245,7 @@ public sealed class FlatButton : Button
         AutoSize = true,
         ForeColor = C_Title,
         BackColor = Color.Black,
-        Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+        Font = UiTheme.GetFont("Microsoft YaHei UI", 9F, FontStyle.Bold),
         TextAlign = ContentAlignment.MiddleLeft,
         Padding = new Padding(0, 4, 0, 4),
     };
@@ -238,7 +259,7 @@ public sealed class FlatButton : Button
         FlatStyle = FlatStyle.Flat,
         BackColor = Color.FromArgb(0x3D, 0x3D, 0x3D),
         ForeColor = Color.FromArgb(0xAA, 0xAA, 0xAA),
-        Font = new Font("Microsoft YaHei UI", 8F),
+        Font = UiTheme.GetFont("Microsoft YaHei UI", 8F),
         TextAlign = ContentAlignment.MiddleLeft,
         Cursor = Cursors.Hand,
         Visible = false,
@@ -255,7 +276,7 @@ public sealed class FlatButton : Button
         WordWrap = false,
         BackColor = C_TextBg,
         ForeColor = Color.FromArgb(0x99, 0xCC, 0x99),
-        Font = new Font("Consolas", 8F),
+        Font = UiTheme.GetFont("Consolas", 8F),
         BorderStyle = BorderStyle.FixedSingle,
         Visible = false,
     };

@@ -94,6 +94,8 @@ public sealed class LlamaServerProcess : IDisposable
 
     public void Dispose()
     {
+        // B-03 修复：先 Stop 终止进程树，避免 Dispose 时进程仍存活导致孤儿进程；Stop 内部已 Kill + Dispose
+        try { Stop(); } catch { }
         try { _proc?.Dispose(); } catch { }
     }
 }

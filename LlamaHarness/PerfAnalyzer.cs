@@ -96,14 +96,85 @@ public sealed class PerfRegression
 /// </summary>
 public static class PerfAnalyzer
 {
-    /// <summary>从采样点取指定指标值（未知键返回 null，调用方跳过）。</summary>
+    // —— P3-A：跨窗口冷却 + 恢复通知 ——
+    // 事件宿主：PerfAnalyzer 保持 static（不破坏既有静态调用点），事件用静态字段承载。
+    /// <summary>告警升级事件（None→Warn / Warn→Crit 触发）。</summary>
+    public static event EventHandler<PerfAlarmEventArgs>? AlarmRaised;
+    /// <summary>告警恢复事件（Warn/Crit→None 触发）。</summary>
+    public static event EventHandler<PerfAlarmEventArgs>? AlarmRecovered;
+
+    // 冷却字典与状态表用独立锁隔离：多线程调用 EvaluatePoints/EvaluateTiming 时互不干扰。
+    private static readonly object _alarmLock = new();
+    private static readonly Dictionary<string, DateTime> _lastAlarmUtc = new();
+    private static readonly Dictionary<string, PerfAlarmLevel> _curLevel = new();
+
+    /// <summary>同 metric 相邻告警的最小间隔（秒），避免刷屏。</summary>
+    private const int AlarmCooldownSeconds = 60;
+
+    /// <summary>分发事件（不抛异常）：订阅方异常隔离，避免影响告警主路径。</summary>
+    private static void RaiseAlarm(EventHandler<PerfAlarmEventArgs>? evt, PerfAlarmEventArgs args)
+    {
+        try { evt?.Invoke(null, args); } catch { /* 订阅方异常隔离 */ }
+    }
+
+    /// <summary>
+    /// 告警状态机事件通知（P1-3/M-06 修复：原 TryRaiseAlarm 定义后无任何调用点，属死代码——注释声称有冷却/升级，
+    /// 实际 EvaluatePoints/EvaluateTiming 全部直发 MakeAlarm）。
+    /// 修复语义：**不抑制直发告警列表**（保持 EvaluatePoints/EvaluateTiming 纯函数直发、测试可复现），
+    /// 状态机只作为事件旁路负责 ①60s 跨窗口冷却限频（防同一 metric 高频刷 AlarmRaised）②None→Warn/Crit、Warn→Crit 升级通知。
+    /// 冷却期内跳过（不推进 _curLevel，保持"仍在告警中"状态，恢复检测仍按真实迁移触发）。
+    /// </summary>
+    private static void NotifyAlarm(string metric, PerfAlarmLevel newLevel, double value, double threshold, DateTime ts)
+    {
+        lock (_alarmLock)
+        {
+            // 跨窗口冷却：同 metric 相邻事件间隔 < 冷却期 → 跳过（保留 _curLevel）
+            if (_lastAlarmUtc.TryGetValue(metric, out var last) && (DateTime.UtcNow - last).TotalSeconds < AlarmCooldownSeconds)
+                return;
+
+            _lastAlarmUtc[metric] = DateTime.UtcNow;
+            var prev = _curLevel.TryGetValue(metric, out var p) ? p : (PerfAlarmLevel?)null;
+            _curLevel[metric] = newLevel;
+
+            // 状态迁移事件（Raise：新级别 > 前一级别 或 从无到 Warn/Crit）
+            if (prev == null || prev < newLevel)
+                RaiseAlarm(AlarmRaised, new PerfAlarmEventArgs(metric, newLevel, value, threshold, ts, prev));
+        }
+    }
+
+    /// <summary>重置告警状态机（冷却表/级别表）。供测试隔离与离线分析前清理；实时路径无需调用。</summary>
+    public static void ResetAlarmState()
+    {
+        lock (_alarmLock) { _lastAlarmUtc.Clear(); _curLevel.Clear(); }
+    }
+
+    /// <summary>
+    /// 状态迁移到 None：Warn/Crit→None 时触发 AlarmRecovered。
+    /// 与告警冷却解耦——恢复事件按真实迁移即刻通知，不受 60s 冷却门限影响（避免"恢复事件被延迟 60s"）。
+    /// 只有当前确实处于告警态（_curLevel 已设）时才触发，避免离线重放或多次扫描重复发恢复事件。
+    /// </summary>
+    private static void OnRecover(string metric, double value, DateTime ts, PerfThresholdRule rule)
+    {
+        lock (_alarmLock)
+        {
+            if (!_curLevel.TryGetValue(metric, out var prev)) return;
+            _curLevel.Remove(metric);
+            // 恢复阈值参考：方向为 Above 时用 WarnValue（越过即恢复）；Below 时同样用 WarnValue
+            double threshold = rule.WarnValue;
+            RaiseAlarm(AlarmRecovered, new PerfAlarmEventArgs(metric, prev, value, threshold, ts, null));
+        }
+    }
+
+    /// <summary>从采样点取指定指标值（未知键返回 null，调用方跳过）。
+    /// D2 修复：为兼容旧命名，每个指标同时支持短名与长名两种键（长短名返回同一值）。</summary>
     public static double? ValueOf(PerfPoint p, string metric) => metric switch
     {
-        "cpu" => p.CpuPercent,
-        "vram_mb" => p.VramUsedMb,
+        "cpu" or "cpu_percent" => p.CpuPercent,
+        "vram_mb" or "vram_used_mb" => p.VramUsedMb,
+        "vram_total_mb" => p.VramTotalMb,
         "mem_gb" => p.MemUsedGb,
-        "pp_tps" => p.PpTps,
-        "tg_tps" => p.TgTps,
+        "pp_tps" or "prompt_tokens_per_second" => p.PpTps,
+        "tg_tps" or "tokens_per_second" => p.TgTps,
         "tok" => p.TokensCached,
         "ctx" => p.CtxUsedPct,
         "slots" => p.SlotsProcessing,
@@ -138,7 +209,9 @@ public static class PerfAnalyzer
                     runWarn = 0;
                     if (runCrit >= rule.MinDurationSeconds)
                     {
-                        alarms.Add(MakeAlarm(pt.Ts, rule.Metric, PerfAlarmLevel.Crit, v.Value));
+                        // P1-3/M-06：直发告警前走状态机事件旁路（冷却限频 + 升级通知；不抑制列表）
+                        NotifyAlarm(rule.Metric, PerfAlarmLevel.Crit, v.Value, rule.CritValue, pt.Ts);
+                        alarms.Add(MakeAlarm(pt.Ts, rule.Metric, rule, PerfAlarmLevel.Crit, v.Value));
                         runCrit = 0;
                     }
                 }
@@ -148,12 +221,16 @@ public static class PerfAnalyzer
                     runCrit = 0;
                     if (runWarn >= rule.MinDurationSeconds)
                     {
-                        alarms.Add(MakeAlarm(pt.Ts, rule.Metric, PerfAlarmLevel.Warn, v.Value));
+                        // P1-3/M-06：同上
+                        NotifyAlarm(rule.Metric, PerfAlarmLevel.Warn, v.Value, rule.WarnValue, pt.Ts);
+                        alarms.Add(MakeAlarm(pt.Ts, rule.Metric, rule, PerfAlarmLevel.Warn, v.Value));
                         runWarn = 0;
                     }
                 }
                 else
                 {
+                    // P1-3/M-06：未越限 → 恢复通知（_curLevel 无值则空操作，幂等；空值打断分支不触发恢复）
+                    OnRecover(rule.Metric, v.Value, pt.Ts, rule);
                     runWarn = 0;
                     runCrit = 0;
                 }
@@ -174,9 +251,21 @@ public static class PerfAnalyzer
         {
             if (rule == null || !string.Equals(rule.Metric, "total_ms", StringComparison.OrdinalIgnoreCase)) continue;
             if (IsOver(t.TotalMs, rule))
-                alarms.Add(MakeAlarm(t.Ts, rule.Metric, PerfAlarmLevel.Crit, t.TotalMs));
+            {
+                // P1-3/M-06：直发前走状态机事件旁路
+                NotifyAlarm(rule.Metric, PerfAlarmLevel.Crit, t.TotalMs, rule.CritValue, t.Ts);
+                alarms.Add(MakeAlarm(t.Ts, rule.Metric, rule, PerfAlarmLevel.Crit, t.TotalMs));
+            }
             else if (IsOverWarn(t.TotalMs, rule))
-                alarms.Add(MakeAlarm(t.Ts, rule.Metric, PerfAlarmLevel.Warn, t.TotalMs));
+            {
+                NotifyAlarm(rule.Metric, PerfAlarmLevel.Warn, t.TotalMs, rule.WarnValue, t.Ts);
+                alarms.Add(MakeAlarm(t.Ts, rule.Metric, rule, PerfAlarmLevel.Warn, t.TotalMs));
+            }
+            else
+            {
+                // P1-3/M-06：未越限 → 恢复通知
+                OnRecover(rule.Metric, t.TotalMs, t.Ts, rule);
+            }
         }
         return alarms;
     }
@@ -184,33 +273,35 @@ public static class PerfAnalyzer
     /// <summary>实时窗口趋势摘要（均值/峰值/最新）。</summary>
     public static PerfSummary ComputeSummary(IReadOnlyList<PerfPoint> points)
     {
-        int n = 0;
+        int nCpu = 0, nVram = 0, nTg = 0;
         double cpuSum = 0, cpuMax = 0, vramSum = 0, vramMax = 0, tgSum = 0, tgMin = double.MaxValue, ctxMax = 0;
         double? lastVram = null;
         int maxInflight = 0;
         foreach (var p in points)
         {
-            n++;
-            if (p.CpuPercent is double c) { cpuSum += c; if (c > cpuMax) cpuMax = c; }
+            if (p.CpuPercent is double c) { nCpu++; cpuSum += c; if (c > cpuMax) cpuMax = c; }
             if (p.VramUsedMb is double vu)
             {
+                nVram++;
                 vramSum += vu;
                 if (vu > vramMax) vramMax = vu;
                 lastVram = vu;
             }
-            if (p.TgTps is double tg) { tgSum += tg; if (tg < tgMin) tgMin = tg; }
+            if (p.TgTps is double tg) { nTg++; tgSum += tg; if (tg < tgMin) tgMin = tg; }
             if (p.CtxUsedPct is double ctx && ctx > ctxMax) ctxMax = ctx;
             if (p.Inflight is int inf && inf > maxInflight) maxInflight = inf;
         }
+        int n = points.Count;
         if (n == 0) return new PerfSummary();
+        // P3 修复：均值分母改为该指标的非空点数，避免含 null 点稀释分母导致均值失真
         return new PerfSummary
         {
             PointCount = n,
-            AvgCpu = Math.Round(cpuSum / n, 1),
-            MaxCpu = Math.Round(cpuMax, 1),
-            AvgVramMb = Math.Round(vramSum / n, 0),
-            MaxVramMb = Math.Round(vramMax, 0),
-            AvgTgTps = Math.Round(tgSum / n, 1),
+            AvgCpu = nCpu > 0 ? Math.Round(cpuSum / nCpu, 1) : (double?)null,
+            MaxCpu = nCpu > 0 ? Math.Round(cpuMax, 1) : (double?)null,
+            AvgVramMb = nVram > 0 ? Math.Round(vramSum / nVram, 0) : (double?)null,
+            MaxVramMb = nVram > 0 ? Math.Round(vramMax, 0) : (double?)null,
+            AvgTgTps = nTg > 0 ? Math.Round(tgSum / nTg, 1) : (double?)null,
             MinTgTps = tgMin == double.MaxValue ? null : Math.Round(tgMin, 1),
             MaxCtxPct = Math.Round(ctxMax, 3),
             LastVramMb = lastVram is double lv ? Math.Round(lv, 0) : null,
@@ -485,7 +576,8 @@ public double KvReuseMs;
         _ => v < rule.WarnValue,
     };
 
-    private static PerfAlarm MakeAlarm(DateTime ts, string metric, PerfAlarmLevel level, double value)
+    /// <summary>触发该级别的判定阈值（Warn 取 WarnValue，Crit 取 CritValue）。</summary>
+    private static PerfAlarm MakeAlarm(DateTime ts, string metric, PerfThresholdRule rule, PerfAlarmLevel level, double value)
     {
         string name = metric switch
         {
@@ -498,14 +590,16 @@ public double KvReuseMs;
             "total_ms" => "请求总时延",
             _ => metric,
         };
-        string dir = "超过阈值";
+        double threshold = level == PerfAlarmLevel.Warn ? rule.WarnValue : rule.CritValue;
+        string dir = rule.Direction == PerfThresholdDirection.Above ? "超过" : "低于";
         return new PerfAlarm
         {
             Ts = ts,
             Metric = metric,
             Level = level,
             Value = value,
-            Message = $"{name} {value:0.##} {dir}（{level}）",
+            Threshold = threshold,
+            Message = $"{name} {value:0.##} {dir}阈值 {threshold:0.##}（{level}）",
         };
     }
 

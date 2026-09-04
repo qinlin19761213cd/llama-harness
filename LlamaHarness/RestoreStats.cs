@@ -315,9 +315,10 @@ public sealed class RestoreStats
             File.WriteAllText(tmp, json);
             File.Move(tmp, _statsPath, overwrite: true);
         }
-        catch
+        catch (Exception ex)
         {
-            // 尽力而为：磁盘满/权限等问题不影响主流程
+            // 尽力而为：磁盘满/权限等问题不影响主流程（含"警告"字样自动入 warn_error.log）
+            LogFile.Append($"警告：[RESTORE-STATS] 持久化写盘失败 path={_statsPath} err={ex.Message}");
         }
     }
 
@@ -351,6 +352,28 @@ public sealed class RestoreStats
         };
     }
 
+    /// <summary>P3-C：JSON 数值反序列化健壮性辅助——非 Number 或反序列化失败时降级为 false（调用方保留默认 0），避免 JsonException 中断整个 Load。</summary>
+    private static bool TryGetInt32(JsonElement el, out int v)
+    {
+        v = 0;
+        if (el.ValueKind != JsonValueKind.Number) return false;
+        return el.TryGetInt32(out v);
+    }
+
+    private static bool TryGetInt64(JsonElement el, out long v)
+    {
+        v = 0;
+        if (el.ValueKind != JsonValueKind.Number) return false;
+        return el.TryGetInt64(out v);
+    }
+
+    private static bool TryGetDouble(JsonElement el, out double v)
+    {
+        v = 0;
+        if (el.ValueKind != JsonValueKind.Number) return false;
+        return el.TryGetDouble(out v);
+    }
+
     /// <summary>从持久化文件恢复累计统计（构造时调用；文件损坏则从零开始）。</summary>
     private void Load()
     {
@@ -363,14 +386,14 @@ public sealed class RestoreStats
                 var root = doc.RootElement;
                 if (root.TryGetProperty("total", out var t))
                 {
-                    if (t.TryGetProperty("attempts", out var a)) _totalAttempts = a.GetInt32();
-                    if (t.TryGetProperty("hits", out var h)) _totalHits = h.GetInt32();
-                    if (t.TryGetProperty("false_miss", out var fm)) _totalFalseMiss = fm.GetInt32();
-                    if (t.TryGetProperty("false_hit", out var fh)) _totalFalseHit = fh.GetInt32();
-                    if (t.TryGetProperty("full_prefill", out var fp)) _totalFullPrefill = fp.GetInt32();
-                    if (t.TryGetProperty("drift_alerts", out var da)) _driftAlertCount = da.GetInt32();
-                    if (t.TryGetProperty("reuse_tokens", out var rt)) _reuseTokens = rt.GetInt64();
-                    if (t.TryGetProperty("reuse_saved_ms", out var rsm)) _reuseSavedMs = rsm.GetDouble();
+                    if (t.TryGetProperty("attempts", out var a)) { if (TryGetInt32(a, out var v)) _totalAttempts = v; }
+                    if (t.TryGetProperty("hits", out var h)) { if (TryGetInt32(h, out var v)) _totalHits = v; }
+                    if (t.TryGetProperty("false_miss", out var fm)) { if (TryGetInt32(fm, out var v)) _totalFalseMiss = v; }
+                    if (t.TryGetProperty("false_hit", out var fh)) { if (TryGetInt32(fh, out var v)) _totalFalseHit = v; }
+                    if (t.TryGetProperty("full_prefill", out var fp)) { if (TryGetInt32(fp, out var v)) _totalFullPrefill = v; }
+                    if (t.TryGetProperty("drift_alerts", out var da)) { if (TryGetInt32(da, out var v)) _driftAlertCount = v; }
+                    if (t.TryGetProperty("reuse_tokens", out var rt)) { if (TryGetInt64(rt, out var v)) _reuseTokens = v; }
+                    if (t.TryGetProperty("reuse_saved_ms", out var rsm)) { if (TryGetDouble(rsm, out var v)) _reuseSavedMs = v; }
                 }
                 if (root.TryGetProperty("by_key", out var bk) && bk.ValueKind == JsonValueKind.Array)
                 {
@@ -379,19 +402,20 @@ public sealed class RestoreStats
                         string keyName = e.TryGetProperty("key", out var kn) ? (kn.GetString() ?? "") : "";
                         if (string.IsNullOrEmpty(keyName)) continue;
                         var ks = new KeyStats();
-                        if (e.TryGetProperty("attempts", out var a)) ks.Attempts = a.GetInt32();
-                        if (e.TryGetProperty("hits", out var h)) ks.Hits = h.GetInt32();
-                        if (e.TryGetProperty("false_miss", out var fm)) ks.FalseMiss = fm.GetInt32();
-                        if (e.TryGetProperty("false_hit", out var fh)) ks.FalseHit = fh.GetInt32();
-                        if (e.TryGetProperty("full_prefill", out var fpc)) ks.FullPrefillCount = fpc.GetInt32();
-                        if (e.TryGetProperty("full_prefill_chain", out var fch)) ks.FullPrefillChain = fch.GetInt32();
+                        if (e.TryGetProperty("attempts", out var a)) { if (TryGetInt32(a, out var v)) ks.Attempts = v; }
+                        if (e.TryGetProperty("hits", out var h)) { if (TryGetInt32(h, out var v)) ks.Hits = v; }
+                        if (e.TryGetProperty("false_miss", out var fm)) { if (TryGetInt32(fm, out var v)) ks.FalseMiss = v; }
+                        if (e.TryGetProperty("false_hit", out var fh)) { if (TryGetInt32(fh, out var v)) ks.FalseHit = v; }
+                        if (e.TryGetProperty("full_prefill", out var fpc)) { if (TryGetInt32(fpc, out var v)) ks.FullPrefillCount = v; }
+                        if (e.TryGetProperty("full_prefill_chain", out var fch)) { if (TryGetInt32(fch, out var v)) ks.FullPrefillChain = v; }
                         _byKey[keyName] = ks;
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // 文件损坏：从零开始（不抛出）
+                // 文件损坏：从零开始（不抛出；含"警告"字样自动入 warn_error.log）
+                LogFile.Append($"警告：[RESTORE-STATS] 反序列化失败已回退初始状态 path={_statsPath} err={ex.Message}");
             }
         }
     }

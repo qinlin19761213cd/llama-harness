@@ -6,7 +6,7 @@ namespace LlamaHarness;
 
 /// <summary>
 /// Token Guard：代理层 token 预估算 + 裁剪，防 "request exceeds context size" 400 错误。
-/// - 计数：POST /tokenize（优先 /v1/tokenize 兼容旧版，404 回退 /tokenize）到后端 llama-server（真实分词器，本地毫秒级）
+/// - 计数：POST /tokenize（b10676+ 主路径，优先）→ /v1/tokenize（兼容旧版兜底）到后端 llama-server（真实分词器，本地毫秒级）
 /// - 预算：CtxSize ÷ Parallel − ReservedOutputTokens（多槽均分总容量）
 /// - 裁剪：轮次制（整轮删除最旧对话，保证 tool_call/tool_result 配对完整）
 ///   + 内容兜底（单条超大消息如巨型 tool_result 做字符级截断）
@@ -17,12 +17,16 @@ public static class TokenGuard
     private const int MinTrimLen = 50;
     private const int MinTrimContentLen = 200;
     private const int GuardTimeoutSeconds = 30;
-    /// <summary>经后端 tokenize 端点计数 token。优先 /v1/tokenize（OpenAI 兼容旧路径），失败回退 /tokenize（llama.cpp b10676+ 新路径）。
+    /// <summary>经后端 tokenize 端点计数 token。优先 /tokenize（llama.cpp b10676+ 新路径），失败回退 /v1/tokenize（OpenAI 兼容旧路径）。
     /// 故障实证：b10676 已移除 /v1/tokenize（实测 404），tokenize 迁移到 /tokenize；双路径保证新旧版本兼容。
     /// 每次失败输出 [TOKEN-GUARD-WARN] 诊断日志（HTTP 码/异常），消除"只见 FAILED 不知为何"的盲区。全部失败返回 null（调用方降级）。</summary>
     /// <summary>经后端 tokenize 端点计数 token（双路径容错已下沉到 IBackendClient.TokenizeAsync）。失败返回 null（调用方降级）。</summary>
     public static async Task<int?> CountTokensAsync(IBackendClient backend, string text)
     {
+        // 问题 16 修复：入参 null 早退。backend=null 抛 ArgumentNullException（调用方编程错误）；
+        // text 空返回 0（无需 tokenize，避免无谓 HTTP 往返与超时）。
+        ArgumentNullException.ThrowIfNull(backend);
+        if (string.IsNullOrEmpty(text)) return 0;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GuardTimeoutSeconds));
         return await backend.TokenizeAsync(text, cts.Token);
     }
@@ -37,17 +41,20 @@ public static class TokenGuard
         int reservedOutput, int reservedOverhead,
         Func<string, Task<int?>>? countTokens = null)
     {
+        // 问题 16 修复：MeasureAsync 参数 null/负数早退。root/backend 抛 ArgumentNullException，budget<=0 抛 ArgumentOutOfRangeException。
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(backend);
+        if (budget <= 0) throw new ArgumentOutOfRangeException(nameof(budget), budget, "budget 必须为正数");
         var messages = root["messages"] as JsonArray;
         if (messages == null || messages.Count == 0) return (true, false, null);
 
         Func<string, Task<int?>> counter = countTokens ?? ((string t) => CountTokensAsync(backend, t));
         int msgEst = await counter(BuildMessagesText(messages)) ?? -1;
 
-        // 强制计量日志（不管是否裁剪都输出，供 Streamlit+DuckDB 统计）
+        // 强制计量日志（通过 note 回传给调用方统一输出，避免 Console.WriteLine 污染 stdout）
         string logLine = msgEst >= 0
             ? $"[TOKEN-GUARD] budget={budget}, msg_est={msgEst}, reserved_out={reservedOutput}, reserved_overhead={reservedOverhead}"
             : $"[TOKEN-GUARD] budget={budget}, msg_est=FAILED(tokenize), reserved_out={reservedOutput}, reserved_overhead={reservedOverhead}";
-        Console.WriteLine(logLine);
 
         var (ok, modified, note) = await GuardAsync(root, backend, budget, counter);
         // 合并计量信息到 note（调用方统一输出）
@@ -65,6 +72,10 @@ public static class TokenGuard
         JsonObject root, IBackendClient backend, int budget,
         Func<string, Task<int?>>? countTokens = null, bool failOpenOnTokenizeError = true)
     {
+        // 问题 16 修复：GuardAsync 参数 null/负数早退（与 MeasureAsync 一致）。
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(backend);
+        if (budget <= 0) throw new ArgumentOutOfRangeException(nameof(budget), budget, "budget 必须为正数");
         var messages = root["messages"] as JsonArray;
         if (messages == null || messages.Count == 0) return (true, false, null);
 
@@ -187,6 +198,11 @@ public static class TokenGuard
         IBackendClient backend, string body, int budget,
         Func<string, Task<int?>>? countTokens = null)
     {
+        // 问题 16 修复：string 版 GuardAsync 参数校验。backend null 抛 ArgumentNullException；
+        // body 空串仍走 Parse 走透传（原语义），但 body null 抛 ArgumentNullException（避免 JsonNode.Parse(null) 抛 NRE）。
+        ArgumentNullException.ThrowIfNull(backend);
+        ArgumentNullException.ThrowIfNull(body);
+        if (budget <= 0) throw new ArgumentOutOfRangeException(nameof(budget), budget, "budget 必须为正数");
         // 解析 body 提取 messages（非 JSON / 无 messages → 透传）
         JsonObject? root;
         try

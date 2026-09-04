@@ -30,6 +30,7 @@ public sealed class PerfSampler : IDisposable
     private readonly SystemMetrics _metrics = new();
     private LlamaCppMonitorCollector? _monitor; // 懒建：端口有效时按当前端口创建；端口变化重建
     private int _monitorPort;                   // _monitor 绑定的后端端口
+
     private int _slowCounter;                   // 快 tick 计数（_gate 保护）
     private double? _vramUsedMb, _vramTotalMb;
     private double? _ppTps, _tgTps;
@@ -37,6 +38,11 @@ public sealed class PerfSampler : IDisposable
     private double? _ctxUsedPct;
     private int? _slotsProcessing;
     private bool _disposed;
+    private volatile bool _warmupSkipped;        // 首点预热丢弃（P3-B）：首 tick 只走轻量采样，不上报到 Series/事件，避免冷启动抖动污染趋势曲线
+
+    // —— D3 修复：Ts 使用单调时钟合成（P1-3/M-07 抽取为 <see cref="MonotonicClock"/>），
+    //    避免 DateTime.Now 受系统时钟回拨 / 夏令时切换 / NTP 校准导致相邻采样点时间倒挂。
+    //    基准在类型首次加载时固定，采样点 Ts 相对基准单调递增。
 
     /// <summary>采样时间序列（1h 滑动窗口；UI/分析器通过 Snapshot/Last 读）。</summary>
     public PerfSeries<PerfPoint> Series { get; } = new(SeriesCapacity);
@@ -57,7 +63,12 @@ public sealed class PerfSampler : IDisposable
         _timer = new System.Threading.Timer(OnTick, null, System.Threading.Timeout.InfiniteTimeSpan, System.Threading.Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>启动采样（立即采第一点，随后 1s 节奏）。</summary>
+    /// <summary>
+    /// 启动采样：首点即触发（DueTime=0），但首 tick 走"预热丢弃"路径——只走轻量采样不写入 Series / 不触发 Sampled 事件，
+    /// 避免冷启动期（perf 计数首次采样、nvidia-smi 首次子进程拉起等）的抖动污染趋势曲线。第二 tick 起为稳态数据。
+    /// 未迁移 PeriodicTimer：本类是 Timer 回调模型（OnTick 内部再异步派 SampleSlowAsync），迁移需改为 async Main + 阻塞消费循环，
+    /// 会让调用方（MainForm 启动路径）语义与线程模型变更，代价大于收益；保留 Timer 但首点用 _warmupSkipped 门控更贴合现有 API 兼容约束。
+    /// </summary>
     public void Start() => _timer.Change(0, FastIntervalMs);
 
     /// <summary>停止采样（保留已有序列）。</summary>
@@ -76,32 +87,37 @@ public sealed class PerfSampler : IDisposable
             memUsed = m.usedGb;
             memTotal = m.totalGb;
         }
-        catch
+        catch (Exception ex)
         {
             // 采样失败：本轮轻量指标置 0，不中断后续
+            LogWarn("metrics_cpu_mem", ex);
         }
         int inflight = 0;
-        try { inflight = _inflightProvider(); } catch { }
+        try { inflight = _inflightProvider(); }
+        catch (Exception ex) { LogWarn("inflight_provider", ex); }
 
         // —— KV 累积型快照（v2.22）：命中 / false_miss / 最大 savedN——
         int? kvHit = null, kvFalse = null, kvSaved = null, kvFull = null; long? kvReuseTok = null; double? kvReuseMs = null;
         if (_kvStatsProvider != null)
         {
-            try { var k = _kvStatsProvider(); kvHit = k.Hits; kvFalse = k.FalseMiss; kvSaved = k.SavedN; kvFull = k.FullPrefill; kvReuseTok = k.ReuseTokens; kvReuseMs = k.ReuseSavedMs; } catch { }
+            try { var k = _kvStatsProvider(); kvHit = k.Hits; kvFalse = k.FalseMiss; kvSaved = k.SavedN; kvFull = k.FullPrefill; kvReuseTok = k.ReuseTokens; kvReuseMs = k.ReuseSavedMs; }
+            catch (Exception ex) { LogWarn("kv_stats_provider", ex); }
         }
 
         // —— 调度累积型快照（v2.22）：驱逐 / 强占——
         int? evict = null, preempt = null;
         if (_schedStatsProvider != null)
         {
-            try { var s = _schedStatsProvider(); evict = s.Evict; preempt = s.Preempt; } catch { }
+            try { var s = _schedStatsProvider(); evict = s.Evict; preempt = s.Preempt; }
+            catch (Exception ex) { LogWarn("sched_stats_provider", ex); }
         }
 
         // —— 日志管道累积型快照（v2.22）：丢弃行数 / flush 平均耗时——
         long? logDropped = null; double? logFlush = null;
         if (_logStatsProvider != null)
         {
-            try { var l = _logStatsProvider(); logDropped = l.Dropped; logFlush = l.FlushAvgMs; } catch { }
+            try { var l = _logStatsProvider(); logDropped = l.Dropped; logFlush = l.FlushAvgMs; }
+            catch (Exception ex) { LogWarn("log_stats_provider", ex); }
         }
 
         // —— 慢指标节奏判定 + 异步触发（不阻塞本 tick）——
@@ -117,9 +133,17 @@ public sealed class PerfSampler : IDisposable
             tok = _tokensCached; ctx = _ctxUsedPct; sp = _slotsProcessing;
         }
 
+        // —— P3-B 首点预热丢弃：首个 tick 仅走轻量采样（含异步触发慢采样预热），不写入 Series / 不触发 Sampled 事件，
+        //    避免冷启动抖动污染趋势曲线与 UI 首屏数字。第二 tick 起为稳态数据（Start→Stop→Start 循环也只在首 tick 丢弃）。
+        if (!_warmupSkipped)
+        {
+            _warmupSkipped = true;
+            return;
+        }
+
         var point = new PerfPoint
         {
-            Ts = DateTime.Now,
+            Ts = MonotonicClock.Now(), // P1-3/M-07：单调时钟，规避系统时钟回拨导致采样点时间倒挂
             CpuPercent = cpu,
             MemUsedGb = memUsed,
             MemTotalGb = memTotal,
@@ -168,14 +192,16 @@ public sealed class PerfSampler : IDisposable
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // nvidia-smi 异常：保留上次缓存
+                LogWarn("vram_capture", ex);
             }
 
             // —— llama.cpp 三接口快照（按后端端口门控；端口变化重建 monitor）——
             int port = 0;
-            try { port = _backendPortProvider(); } catch { }
+            try { port = _backendPortProvider(); }
+            catch (Exception ex) { LogWarn("backend_port_provider", ex); }
             if (port <= 0) return; // 未唤醒/手动未启动：跳过，保留上次缓存
             var mon = GetOrCreateMonitor(port);
             if (mon == null) return;
@@ -186,7 +212,8 @@ public sealed class PerfSampler : IDisposable
                 // —— b10676 兼容：新版 /slots 精简（仅 id/n_ctx/speculative/is_processing，无 tg_tps/pp_tps/tokens_cached），
                 //    吞吐改从 /metrics（Prometheus）的 predicted_tokens_seconds / prompt_tokens_seconds 兜底 ——
                 double? mTg = null, mPp = null;
-                try { (mTg, mPp) = ParseMetricsPrometheus(snap.RawMetricsText); } catch { }
+                try { (mTg, mPp) = ParseMetricsPrometheus(snap.RawMetricsText); }
+                catch (Exception ex) { LogWarn("metrics_parse", ex); }
                 if (slots.Count > 0)
                 {
                     double ppSum = 0, tgSum = 0;
@@ -213,9 +240,10 @@ public sealed class PerfSampler : IDisposable
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // 后端未就绪/接口失败：保留上次缓存
+                LogWarn("cpp_capture", ex);
             }
         }
         finally
@@ -238,6 +266,10 @@ public sealed class PerfSampler : IDisposable
             int sp = line.IndexOf(' ');
             if (sp <= 0) continue;
             var name = line.Substring(0, sp);
+            // D1 修复：Prometheus 指标名可能带标签后缀（如 llamacpp:predicted_tokens_seconds{slot="0"}），
+            // 精确 == 会失配；截取 '}' 之前的部分得到裸指标名再匹配。
+            int brace = name.IndexOf('}');
+            if (brace >= 0) name = name.Substring(0, brace);
             var val = line.Substring(sp + 1).Trim();
             if (name == "llamacpp:predicted_tokens_seconds" &&
                 double.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var t))
@@ -276,6 +308,26 @@ public sealed class PerfSampler : IDisposable
             _monitor = new LlamaCppMonitorCollector($"http://127.0.0.1:{port}");
             _monitorPort = port;
             return _monitor;
+        }
+    }
+
+    /// <summary>
+    /// P3-B 可观测埋点：把 catch{} 静默吞升级为结构化 Warn 记录（不落主日志流避免刷屏，
+    /// 走 PerfLog 的 "warn" kind 行，格式为 kind,ts,op=&lt;tag&gt;,reason=&lt;ex.Type.Name&gt;,msg=&lt;ex.Message&gt;）。
+    /// 保持原控制流：本方法自身尽力而为、永不抛出，调用点仍按"吞异常、继续跑"的原语义处理。
+    /// 选择 PerfLog.LogEvent 而非新增 PerfLog.Warn 方法：避免修改 PerfLog.cs 超出本任务范围；
+    /// op= 字段承载异常分类标签，msg= 由 PerfLog.Escape 自动转义，保持每行可解析。
+    /// </summary>
+    private static void LogWarn(string op, Exception ex)
+    {
+        try
+        {
+            var evt = new PerfEvent("warn", op, 0, $"{ex.GetType().Name}: {ex.Message}");
+            PerfLog.LogEvent("warn", evt);
+        }
+        catch
+        {
+            // 双保险：PerfLog 内部已尽力而为，此处兜底防 PerfEvent 构造/写入时的任何异常逃逸
         }
     }
 

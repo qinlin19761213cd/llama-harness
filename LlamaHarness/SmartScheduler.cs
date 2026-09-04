@@ -22,12 +22,19 @@ public sealed partial class SmartScheduler : IDisposable
 
     private readonly AppConfig _cfg;
     private readonly LlamaServerProcess _server = new();
+    // B-03 修复：Exited 事件订阅委托持有引用，Dispose 时可精确 -= 解绑
+    private EventHandler<int>? _onServerExitedDelegate;
     // 后端客户端（IBackendClient）：推理/计量/探测统一走 LlamaServerClient（HttpClient 唯一化，v2.26）。
     // E-7：keep-alive + 池化连接寿命上限（替代 Connection: close）——
     // 休眠/唤醒后残留的死连接由 PooledConnectionLifetime 自然过期淘汰；偶发死连接由 SendAndPipeAsync 500ms 重试兜底。
-    private IBackendClient? _backend;
-    /// <summary>懒加载后端客户端：baseUrl 依赖运行时探测的 _backendPort，首次使用才构建。</summary>
-    private IBackendClient Backend => _backend ??= BackendClientFactory.Create($"http://localhost:{_backendPort}");
+    // A1 修复：Backend 懒加载改用 Lazy<T> + ExecutionAndPublication，消除无锁/CAS 双检竞态
+    // （原实现在并发首次访问时会创建多个 LlamaServerClient，各自持有 SocketsHttpHandler+连接池）。
+    // 语义保持：Lazy 首次访问时才读取 _backendPort，构造函数早期未确定端口也不影响。
+    // 字段初始化器：Lazy 工厂延迟到首次访问 Backend 属性时执行，届时 _backendPort 已就绪。
+    private readonly Lazy<IBackendClient> _backendLazy;
+    /// <summary>懒加载后端客户端：baseUrl 依赖运行时探测的 _backendPort，首次使用才构建。
+    /// M-11：同时把调度器 Log 注入到 LlamaServerClient，避免 TokenizeAsync 走 Console.WriteLine。</summary>
+    private IBackendClient Backend => _backendLazy.Value;
 
     private readonly HttpListener _listener = new();
     private readonly System.Threading.Timer _tickTimer;
@@ -35,13 +42,15 @@ public sealed partial class SmartScheduler : IDisposable
     private readonly object _sleepGate = new();
 
     private Task? _wakeTask;
-    private int _inflight;                       // 在途请求计数（含排队等待唤醒的）
+    private int _inflight;                       // 在途请求计数（含排队等待唤醒的）—— 通过 Interlocked/Volatile API 访问以获取原子性与可见性（修复1）；不加 volatile 修饰符避免与 ref 参数冲突触发 CS0420
     private readonly InFlightTracker _inflightTracker = new(); // 在途任务明细（状态栏服务阶段卡片展示，v2.18）
     private long _lastTouchTicks = DateTime.Now.Ticks; // 闲置计时基准（Interlocked 保护，跨线程读写）
     private int _phase;                          // Phase 索引，统一经 Volatile.Read/Write 访问
     private volatile int _backendPort;           // 实际运行时后端端口（自动探测空闲）
     private int _tickCount;                      // 秒级 tick 计数（定时器周期 1s），用于周期性自愈检查
     private readonly System.Collections.Generic.Queue<string> _recentOutput = new(); // 进程输出末几行，用于失败诊断
+    private volatile bool _stopRequested;        // 停止信号传播标志（修复9）：StopNow 置位后入口拒绝新请求
+    private readonly System.Threading.ManualResetEventSlim _graceWakeEvent = new(false); // 修复2：休眠观察期唤醒事件，避免计时循环与唤醒竞争
 
     /// <summary>P 核亲和性自愈检查间隔（tick 数，定时器周期 1s）：每 5 秒核对一次绑定是否被系统重置。</summary>
     private const int AffinityHealEveryTicks = 5;
@@ -170,8 +179,14 @@ public sealed partial class SmartScheduler : IDisposable
     public SmartScheduler(AppConfig cfg)
     {
         _cfg = cfg;
+        // A1 修复：Lazy 在此处构造（工厂闭包延迟到首次访问 Backend 属性时执行，届时 _backendPort 已就绪）
+        _backendLazy = new Lazy<IBackendClient>(
+            () => new LlamaServerClient($"http://localhost:{_backendPort}") { Log = s => Log?.Invoke(s) },
+            LazyThreadSafetyMode.ExecutionAndPublication);
         _server.OutputLine += OnServerOutput;
-        _server.Exited += (_, code) => OnServerExited(code);
+        // B-03 修复：Exited 用委托变量持有引用，Dispose 时可精确 -= 解绑
+        _onServerExitedDelegate = (s, code) => OnServerExited(code);
+        _server.Exited += _onServerExitedDelegate;
         _tickTimer = new System.Threading.Timer(OnTick, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
@@ -239,9 +254,13 @@ public sealed partial class SmartScheduler : IDisposable
         lock (_recentOutput)
         {
             _recentOutput.Enqueue(line);
-            while (_recentOutput.Count > 3) _recentOutput.Dequeue();
+            // 修复4：bad_alloc/OOM 证据窗口扩到 8 行（原 3 行太窄，llama.cpp 的 OOM 提示往往跨多行输出）
+            while (_recentOutput.Count > BadAllocEvidenceLines) _recentOutput.Dequeue();
         }
     }
+
+    /// <summary>修复4：bad_alloc/OOM 判定使用的进程输出滑动窗口行数（覆盖 OOM 提示跨行输出场景）。</summary>
+    private const int BadAllocEvidenceLines = 8;
 
     private string RecentOutput()
     {
@@ -249,6 +268,20 @@ public sealed partial class SmartScheduler : IDisposable
         {
             return string.Join(Environment.NewLine, _recentOutput);
         }
+    }
+
+    /// <summary>修复4：聚合滑动窗口内的 OOM/bad_alloc 证据——单行 Contains 检测会漏识别跨行输出的堆分配失败提示。</summary>
+    private bool RecentOutputHasBadAlloc()
+    {
+        string snapshot;
+        lock (_recentOutput)
+        {
+            snapshot = string.Join(Environment.NewLine, _recentOutput);
+        }
+        return snapshot.Contains("bad allocation", StringComparison.OrdinalIgnoreCase)
+            || snapshot.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
+            || snapshot.Contains("std::bad_alloc", StringComparison.OrdinalIgnoreCase)
+            || snapshot.Contains("Cannot allocate memory", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>初始化：启动闲置计时；智能模式下开始监听前端端口。</summary>
@@ -276,7 +309,7 @@ public sealed partial class SmartScheduler : IDisposable
 
     private int _nonStreamWarned; // 每会话只告警一次，唤醒时重置
 
-    // ==================== 闲置休眠（15 分钟无请求自动释放） ====================
+        // ==================== 闲置休眠（15 分钟无请求自动释放） ====================
 
     /// <summary>刷新闲置倒计时基准点（Interlocked 原子写，供多线程读取）。</summary>
     private void Touch() => Interlocked.Exchange(ref _lastTouchTicks, DateTime.Now.Ticks);

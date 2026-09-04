@@ -106,6 +106,9 @@ public static class FlushPolicy
 /// 管道内仅写线程触碰（Shutdown 超时路径除外，尽力而为）。public 供测试。</summary>
 public sealed class LogStreamWriter : IDisposable
 {
+    /// <summary>每个日志流保留的历史备份最大份数（超出按时间戳从旧到新清理）。</summary>
+    private const int MaxBackups = 3;
+
     private readonly string _path;
     private StreamWriter? _writer;
     private long _bytes;         // 文件总字节（轮切基准）
@@ -132,16 +135,20 @@ public sealed class LogStreamWriter : IDisposable
         _pendingBytes = 0;
     }
 
-    /// <summary>按大小轮切：close → path→path.1（覆盖旧备份）→ 下次写自动重开。返回是否发生轮切。</summary>
+    /// <summary>按大小轮切：close → path→path.yyyyMMdd-HHmmss-{seq}（时间戳+序号命名，同日多次轮切不再互相覆盖）
+    /// → 清理超出保留上限的旧备份 → 下次写自动重开。返回是否发生轮切。
+    /// C4 修复：原实现固定备份名 path.1，同日第二次轮切会先 Delete 再 Move 造成上一次备份静默丢失。</summary>
     public bool RotateIfNeeded(long maxBytes)
     {
         if (_bytes <= maxBytes) return false;
         CloseQuiet();
         try
         {
-            var backup = _path + ".1";
-            if (File.Exists(backup)) File.Delete(backup);
-            File.Move(_path, backup);
+            string backup;
+            if (TryMoveToBackup(out backup))
+            {
+                TrimBackups(backup);
+            }
         }
         catch
         {
@@ -149,6 +156,57 @@ public sealed class LogStreamWriter : IDisposable
         }
         _bytes = 0;
         return true;
+    }
+
+    /// <summary>尝试把当前日志轮切为时间戳备份名。返回是否成功移动。</summary>
+    private bool TryMoveToBackup(out string backupPath)
+    {
+        backupPath = string.Empty;
+        if (!File.Exists(_path)) return false;
+
+        string dir = Path.GetDirectoryName(_path) ?? "";
+        string stem = Path.GetFileNameWithoutExtension(_path);
+        string ext = Path.GetExtension(_path);
+        string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+
+        for (int seq = 0; seq < 1000; seq++)
+        {
+            // 同秒内多次轮切：序号递增防文件名冲突
+            string name = seq == 0 ? $"{stem}.{stamp}{ext}" : $"{stem}.{stamp}-{seq}{ext}";
+            string candidate = Path.Combine(dir, name);
+            if (File.Exists(candidate)) continue;
+            try
+            {
+                File.Move(_path, candidate);
+                backupPath = candidate;
+                return true;
+            }
+            catch
+            {
+                // 单名失败继续尝试下一个序号（文件被外部占用等瞬时情况）
+            }
+        }
+        return false;
+    }
+
+    /// <summary>清理同目录下的历史备份，仅保留最新 MaxBackups 份（按文件最后写入时间判定）。失败不影响主流程。</summary>
+    private void TrimBackups(string justCreated)
+    {
+        string dir = Path.GetDirectoryName(_path) ?? "";
+        string stem = Path.GetFileNameWithoutExtension(_path);
+        string ext = Path.GetExtension(_path);
+        var backups = Directory.GetFiles(dir, $"{stem}.*{ext}");
+        if (backups.Length <= MaxBackups) return;
+
+        var stale = backups
+            .Where(p => !string.Equals(p, justCreated, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(p => { try { return File.GetLastWriteTime(p); } catch { return DateTime.MinValue; } })
+            .Skip(MaxBackups)
+            .ToArray();
+        foreach (var p in stale)
+        {
+            try { File.Delete(p); } catch { /* 尽力而为 */ }
+        }
     }
 
     private void EnsureOpen()

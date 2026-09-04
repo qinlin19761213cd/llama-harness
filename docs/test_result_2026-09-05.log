@@ -1,0 +1,104 @@
+﻿  LlamaHarness -> c:\project\lunch\LlamaHarness\bin\Debug\net8.0-windows\Llama-harness.dll
+  LlamaHarness.Tests -> c:\project\lunch\LlamaHarness.Tests\bin\Debug\net8.0-windows\LlamaHarness.Tests.dll
+c:\project\lunch\LlamaHarness.Tests\bin\Debug\net8.0-windows\LlamaHarness.Tests.dll (.NETCoreApp,Version=v8.0)的测试运行
+总共 1 个测试文件与指定模式相匹配。
+dotnet : [xUnit.net 00:00:00.16]     LlamaHarness.Tests.TokenGuardTrimTests.TokenizeFailureMidTrim_DegradesToUnmodified
+ [FAIL]
+At line:15 char:3593
++ ... pgrep\bin'; dotnet test "c:\project\lunch\LlamaHarness.Tests\LlamaHar ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([xUnit.net 00:0...modified [FAIL]:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[xUnit.net 00:00:00.16]     LlamaHarness.Tests.LaunchArgsTests.ExtraArgs_AppendedLast [FAIL]
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.TokenizeFailureMidTrim_DegradesToUnmodified [11 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(JsonObject root, IBackendClient backend, Int32 budget, Func`2 countTokens, Boolean failOpenOnTokenizeError) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 77
+   at LlamaHarness.Tests.TokenGuardTrimTests.TokenizeFailureMidTrim_DegradesToUnmodified() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 101
+--- End of stack trace from previous location ---
+  失败 LlamaHarness.Tests.LaunchArgsTests.ExtraArgs_AppendedLast [2 ms]
+  错误消息:
+   Assert.EndsWith() Failure: String end does not match
+String:       ···"ft-n-max 2 --mmproj D:\\a b\\projector.gguf"
+Expected end: "--mmproj "D:\\a b\\projector.gguf""
+  堆栈跟踪:
+     at LlamaHarness.Tests.LaunchArgsTests.ExtraArgs_AppendedLast() in c:\project\lunch\LlamaHarness.Tests\LaunchArgsTests.cs:line 82
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+[xUnit.net 00:00:00.16]     LlamaHarness.Tests.TokenGuardTrimTests.TurnTrim_BinarySearchConverges_FewerTokenizes [FAIL]
+[xUnit.net 00:00:00.17]     LlamaHarness.Tests.TokenGuardTrimTests.NoUserMessages_PassThrough [FAIL]
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.TurnTrim_BinarySearchConverges_FewerTokenizes [< 1 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(JsonObject root, IBackendClient backend, Int32 budget, Func`2 countTokens, Boolean failOpenOnTokenizeError) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 77
+   at LlamaHarness.Tests.TokenGuardTrimTests.TurnTrim_BinarySearchConverges_FewerTokenizes() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 54
+--- End of stack trace from previous location ---
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.NoUserMessages_PassThrough [< 1 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(JsonObject root, IBackendClient backend, Int32 budget, Func`2 countTokens, Boolean failOpenOnTokenizeError) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 77
+   at LlamaHarness.Tests.TokenGuardTrimTests.NoUserMessages_PassThrough() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 142
+--- End of stack trace from previous location ---
+[xUnit.net 00:00:00.17]     LlamaHarness.Tests.TokenGuardTrimTests.WithinBudget_NoTrim_OriginalBodyPreserved [FAIL]
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.WithinBudget_NoTrim_OriginalBodyPreserved [2 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(IBackendClient backend, String body, Int32 budget, Func`2 countTokens) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 203
+   at LlamaHarness.Tests.TokenGuardTrimTests.WithinBudget_NoTrim_OriginalBodyPreserved() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 38
+--- End of stack trace from previous location ---
+[xUnit.net 00:00:00.17]     LlamaHarness.Tests.TokenGuardTrimTests.ContentFallback_HalvingConverges [FAIL]
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.ContentFallback_HalvingConverges [< 1 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(JsonObject root, IBackendClient backend, Int32 budget, Func`2 countTokens, Boolean failOpenOnTokenizeError) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 77
+   at LlamaHarness.Tests.TokenGuardTrimTests.ContentFallback_HalvingConverges() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 121
+--- End of stack trace from previous location ---
+[xUnit.net 00:00:00.17]     LlamaHarness.Tests.TokenGuardTrimTests.TurnTrim_FinalCountWithinBudget [FAIL]
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.TurnTrim_FinalCountWithinBudget [< 1 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(JsonObject root, IBackendClient backend, Int32 budget, Func`2 countTokens, Boolean failOpenOnTokenizeError) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 77
+   at LlamaHarness.Tests.TokenGuardTrimTests.TurnTrim_FinalCountWithinBudget() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 74
+--- End of stack trace from previous location ---
+[xUnit.net 00:00:00.17]     LlamaHarness.Tests.TokenGuardTrimTests.FailOpenFalse_TokenizeFailure_UsesCharEstimateToTrim
+ [FAIL]
+  失败 LlamaHarness.Tests.TokenGuardTrimTests.FailOpenFalse_TokenizeFailure_UsesCharEstimateToTrim [< 1 ms]
+  错误消息:
+   System.ArgumentNullException : Value cannot be null. (Parameter 'backend')
+  堆栈跟踪:
+     at System.ArgumentNullException.Throw(String paramName)
+   at System.ArgumentNullException.ThrowIfNull(Object argument, String paramName)
+   at LlamaHarness.TokenGuard.GuardAsync(JsonObject root, IBackendClient backend, Int32 budget, Func`2 countTokens, Boolean failOpenOnTokenizeError) in c:\project\lunch\LlamaHarness\TokenGuard.cs:line 77
+   at LlamaHarness.Tests.TokenGuardTrimTests.FailOpenFalse_TokenizeFailure_UsesCharEstimateToTrim() in c:\project\lunch\LlamaHarness.Tests\TokenGuardTrimTests.cs:line 160
+--- End of stack trace from previous location ---
+[xUnit.net 00:00:02.24]     LlamaHarness.Tests.LogPipelineTests.Rotate_TriggersAtThreshold [FAIL]
+  失败 LlamaHarness.Tests.LogPipelineTests.Rotate_TriggersAtThreshold [1 ms]
+  错误消息:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  堆栈跟踪:
+     at LlamaHarness.Tests.LogPipelineTests.Rotate_TriggersAtThreshold() in c:\project\lunch\LlamaHarness.Tests\LogPipelineTests.cs:line 108
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+失败!  - 失败:     9，通过:   281，已跳过:     0，总计:   290，持续时间: 7 s - LlamaHarness.Tests.dll (net8.0)

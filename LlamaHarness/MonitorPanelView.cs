@@ -79,7 +79,7 @@ public sealed class MonitorPanelView : UserControl
             FlatStyle = FlatStyle.Flat,
             BackColor = UiTheme.C_Primary,
             ForeColor = Color.Black,
-            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F, FontStyle.Bold),
             Cursor = Cursors.Hand,
         };
         _btnRefreshRes.FlatAppearance.BorderSize = 0;
@@ -90,7 +90,7 @@ public sealed class MonitorPanelView : UserControl
             Height = 20,
             TextAlign = ContentAlignment.MiddleRight,
             ForeColor = Color.FromArgb(0x88, 0x88, 0x88),
-            Font = new Font("Microsoft YaHei UI", 8F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 8F),
         };
         toolbarPanel.Controls.Add(_lblResTimestamp);
         toolbarPanel.Controls.Add(_btnRefreshRes);
@@ -103,7 +103,7 @@ public sealed class MonitorPanelView : UserControl
         {
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Consolas", 10F),
+            Font = UiTheme.GetFont("Consolas", 10F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
             AutoSize = true,
@@ -120,7 +120,7 @@ public sealed class MonitorPanelView : UserControl
         {
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.TopLeft,
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
             AutoSize = true,
@@ -164,7 +164,7 @@ public sealed class MonitorPanelView : UserControl
         {
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.TopLeft,
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
             AutoSize = true,
@@ -380,13 +380,16 @@ public sealed class MonitorPanelView : UserControl
         if (snap == null || string.IsNullOrEmpty(snap.RawPropsJson))
         {
             _lblPropsTitle.Text = "  /props 模型配置  ✗ 不可用";
-            _tblPropsBody.Controls.Clear();
+            _tblPropsBody.Controls.DisposeChildren();
+            // P1-1 修复：RowStyles/RowCount 一并重置，避免随刷新次数无界累积（原只 Clear 控件，行样式只增不减）
+            _tblPropsBody.RowStyles.Clear();
+            _tblPropsBody.RowCount = 0;
             var errLbl = new Label
             {
                 Text = "llama-server 未启动或接口不可达",
                 Dock = DockStyle.Fill,
                 ForeColor = Color.FromArgb(0xFF, 0x66, 0x66),
-                Font = new Font("Microsoft YaHei UI", 9F),
+                Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
                 Padding = new Padding(8, 4, 8, 4),
             };
             _tblPropsBody.Controls.Add(errLbl);
@@ -397,7 +400,10 @@ public sealed class MonitorPanelView : UserControl
         _lblPropsTitle.Text = "  /props 模型配置  ✓";
         var p = snap.GlobalProps;
 
-        _tblPropsBody.Controls.Clear();
+        _tblPropsBody.Controls.DisposeChildren();
+        // P1-1 修复：RowStyles/RowCount 一并重置，避免随刷新次数无界累积（原只 Clear 控件，行样式只增不减）
+        _tblPropsBody.RowStyles.Clear();
+        _tblPropsBody.RowCount = 0;
         int rowIdx = 0;
         foreach (var kv in p.RawFields)
         {
@@ -411,7 +417,7 @@ public sealed class MonitorPanelView : UserControl
                 Text = fieldName,
                 Dock = DockStyle.Fill,
                 ForeColor = UiTheme.C_TextFg,
-                Font = new Font("Microsoft YaHei UI", 9F),
+                Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
                 Padding = new Padding(8, 6, 4, 6),
                 BorderStyle = BorderStyle.None,
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -421,7 +427,7 @@ public sealed class MonitorPanelView : UserControl
                 Text = val,
                 Dock = DockStyle.Fill,
                 ForeColor = Color.FromArgb(0xCC, 0xCC, 0xCC),
-                Font = new Font("Consolas", 9F),
+                Font = UiTheme.GetFont("Consolas", 9F),
                 Padding = new Padding(4, 6, 8, 6),
                 BorderStyle = BorderStyle.None,
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -436,7 +442,7 @@ public sealed class MonitorPanelView : UserControl
                 Text = PropDescEx(fieldName, val),
                 Dock = DockStyle.Fill,
                 ForeColor = Color.FromArgb(0x8A, 0x8A, 0x8A),
-                Font = new Font("Microsoft YaHei UI", 9F),
+                Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
                 Padding = new Padding(4, 6, 8, 6),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoSize = true,

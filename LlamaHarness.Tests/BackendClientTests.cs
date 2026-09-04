@@ -126,7 +126,7 @@ public class BackendClientTests
 
     // ── ②' tokenize 计数 ───────────────────────────────────
     [Fact]
-    public async Task TokenizeAsync_旧路径_tokens数组计数()
+    public async Task TokenizeAsync_新路径_tokens数组计数()
     {
         var (client, h) = Make();
         h.Responder = _ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -134,11 +134,11 @@ public class BackendClientTests
 
         var n = await client.TokenizeAsync("hello", CancellationToken.None);
         Assert.Equal(5, n);
-        Assert.Equal("http://localhost:8081/v1/tokenize", Assert.Single(h.Requests).Url);
+        Assert.Equal("http://localhost:8081/tokenize", Assert.Single(h.Requests).Url);
     }
 
     [Fact]
-    public async Task TokenizeAsync_旧路径404_回退新路径()
+    public async Task TokenizeAsync_新路径404_回退旧路径()
     {
         var (client, h) = Make();
         var call = 0;
@@ -153,7 +153,7 @@ public class BackendClientTests
         var n = await client.TokenizeAsync("hello", CancellationToken.None);
         Assert.Equal(7, n);
         Assert.Equal(2, h.Requests.Count);
-        Assert.Equal("http://localhost:8081/tokenize", h.Requests[1].Url);
+        Assert.Equal("http://localhost:8081/v1/tokenize", h.Requests[1].Url);
     }
 
     [Fact]
