@@ -64,6 +64,8 @@ public class AppConfig
     public int MaxContinuations { get; set; } = 10;
     /// <summary>单轮推理超时（秒）：超时返回已生成内容。</summary>
     public int ContinuationTimeoutSeconds { get; set; } = 300;
+    /// <summary>后端请求超时（秒）：转发请求等待响应头的最长时限（单槽排队/调度异常时的兜底，防排队请求无限挂起）。默认 300。</summary>
+    public int BackendRequestTimeoutSeconds { get; set; } = 300;
     /// <summary>bad_alloc 崩溃自动恢复总开关：流中断/5xx 检测到 bad_alloc 时自动快照接续或全量重放。</summary>
     public bool CrashRecoveryEnabled { get; set; } = true;
     /// <summary>进程死亡分支的最大自动重启次数（防无限重启循环）。</summary>
@@ -162,6 +164,7 @@ public class AppConfig
         if (cfg.CacheRamMiB < 0) cfg.CacheRamMiB = 0;
         if (cfg.MaxContinuations < 1) cfg.MaxContinuations = 10;
         if (cfg.ContinuationTimeoutSeconds < 30) cfg.ContinuationTimeoutSeconds = 300;
+        if (cfg.BackendRequestTimeoutSeconds < 30) cfg.BackendRequestTimeoutSeconds = 300;
         if (cfg.MaxAutoRestarts < 0) cfg.MaxAutoRestarts = 2; // 0 = 禁用进程死亡分支的自动重启
         if (cfg.RecoveryKeepAliveIntervalSeconds < 1) cfg.RecoveryKeepAliveIntervalSeconds = 5;
         if (cfg.PerfSeriesSeconds is < 60 or > 86400) cfg.PerfSeriesSeconds = 3600; // 性能窗口 1 分钟~24 小时
