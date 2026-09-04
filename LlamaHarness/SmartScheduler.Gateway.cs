@@ -395,9 +395,11 @@ public partial class SmartScheduler
         {
             if (item is not JsonObject msg) continue;
 
-            // ① 简单字符串 content：直接替换
+            // ① 简单字符串 content：直接替换（仅 JsonValue 走此分支；数组/对象型 content 走 ②，
+            //    防 GetValue<string>() 对 JsonArray 抛 "The node must be of type 'JsonValue'"）
             if (msg.TryGetPropertyValue("content", out var contentNode)
-                && contentNode?.GetValue<string>() is { } contentStr
+                && contentNode is System.Text.Json.Nodes.JsonValue cv
+                && cv.TryGetValue<string>(out var contentStr)
                 && contentStr.Contains("<thinking", StringComparison.OrdinalIgnoreCase))
             {
                 var stripped = closedRe.Replace(contentStr, "");
@@ -416,7 +418,9 @@ public partial class SmartScheduler
                 foreach (var part in parts)
                 {
                     if (part is not JsonObject pObj) continue;
-                    if (!pObj.TryGetPropertyValue("text", out var textNode) || textNode?.GetValue<string>() is not { } textStr)
+                    if (!pObj.TryGetPropertyValue("text", out var textNode)
+                        || textNode is not System.Text.Json.Nodes.JsonValue tv
+                        || !tv.TryGetValue<string>(out var textStr))
                         continue;
                     if (!textStr.Contains("<thinking", StringComparison.OrdinalIgnoreCase)) continue;
                     var stripped = closedRe.Replace(textStr, "");
