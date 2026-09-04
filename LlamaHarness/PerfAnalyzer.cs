@@ -118,17 +118,19 @@ public static class PerfAnalyzer
     }
 
     /// <summary>
-    /// 评估并维护告警状态机：跨窗口冷却 + None↔Warn/Crit 迁移事件。
-    /// 返回 false = 冷却期内跳过（不生成告警、不改状态、不重置 run 计数语义）；返回 true = 生成告警且状态推进。
-    /// 冷却期内**不重置**当前告警级别（保持状态机"仍在告警中"）。
+    /// 告警状态机事件通知（P1-3/M-06 修复：原 TryRaiseAlarm 定义后无任何调用点，属死代码——注释声称有冷却/升级，
+    /// 实际 EvaluatePoints/EvaluateTiming 全部直发 MakeAlarm）。
+    /// 修复语义：**不抑制直发告警列表**（保持 EvaluatePoints/EvaluateTiming 纯函数直发、测试可复现），
+    /// 状态机只作为事件旁路负责 ①60s 跨窗口冷却限频（防同一 metric 高频刷 AlarmRaised）②None→Warn/Crit、Warn→Crit 升级通知。
+    /// 冷却期内跳过（不推进 _curLevel，保持"仍在告警中"状态，恢复检测仍按真实迁移触发）。
     /// </summary>
-    private static bool TryRaiseAlarm(string metric, PerfAlarmLevel newLevel, double value, double threshold, DateTime ts)
+    private static void NotifyAlarm(string metric, PerfAlarmLevel newLevel, double value, double threshold, DateTime ts)
     {
         lock (_alarmLock)
         {
-            // 跨窗口冷却：同 metric 相邻告警间隔 < 冷却期 → 跳过（保留 _curLevel）
+            // 跨窗口冷却：同 metric 相邻事件间隔 < 冷却期 → 跳过（保留 _curLevel）
             if (_lastAlarmUtc.TryGetValue(metric, out var last) && (DateTime.UtcNow - last).TotalSeconds < AlarmCooldownSeconds)
-                return false;
+                return;
 
             _lastAlarmUtc[metric] = DateTime.UtcNow;
             var prev = _curLevel.TryGetValue(metric, out var p) ? p : (PerfAlarmLevel?)null;
@@ -137,9 +139,13 @@ public static class PerfAnalyzer
             // 状态迁移事件（Raise：新级别 > 前一级别 或 从无到 Warn/Crit）
             if (prev == null || prev < newLevel)
                 RaiseAlarm(AlarmRaised, new PerfAlarmEventArgs(metric, newLevel, value, threshold, ts, prev));
-            // prev >= newLevel（同级别或降级）：冷却期外同级别告警也允许（连续窗口外新触发），但仍走状态机
-            return true;
         }
+    }
+
+    /// <summary>重置告警状态机（冷却表/级别表）。供测试隔离与离线分析前清理；实时路径无需调用。</summary>
+    public static void ResetAlarmState()
+    {
+        lock (_alarmLock) { _lastAlarmUtc.Clear(); _curLevel.Clear(); }
     }
 
     /// <summary>
@@ -203,6 +209,8 @@ public static class PerfAnalyzer
                     runWarn = 0;
                     if (runCrit >= rule.MinDurationSeconds)
                     {
+                        // P1-3/M-06：直发告警前走状态机事件旁路（冷却限频 + 升级通知；不抑制列表）
+                        NotifyAlarm(rule.Metric, PerfAlarmLevel.Crit, v.Value, rule.CritValue, pt.Ts);
                         alarms.Add(MakeAlarm(pt.Ts, rule.Metric, rule, PerfAlarmLevel.Crit, v.Value));
                         runCrit = 0;
                     }
@@ -213,12 +221,16 @@ public static class PerfAnalyzer
                     runCrit = 0;
                     if (runWarn >= rule.MinDurationSeconds)
                     {
+                        // P1-3/M-06：同上
+                        NotifyAlarm(rule.Metric, PerfAlarmLevel.Warn, v.Value, rule.WarnValue, pt.Ts);
                         alarms.Add(MakeAlarm(pt.Ts, rule.Metric, rule, PerfAlarmLevel.Warn, v.Value));
                         runWarn = 0;
                     }
                 }
                 else
                 {
+                    // P1-3/M-06：未越限 → 恢复通知（_curLevel 无值则空操作，幂等；空值打断分支不触发恢复）
+                    OnRecover(rule.Metric, v.Value, pt.Ts, rule);
                     runWarn = 0;
                     runCrit = 0;
                 }
@@ -239,9 +251,21 @@ public static class PerfAnalyzer
         {
             if (rule == null || !string.Equals(rule.Metric, "total_ms", StringComparison.OrdinalIgnoreCase)) continue;
             if (IsOver(t.TotalMs, rule))
+            {
+                // P1-3/M-06：直发前走状态机事件旁路
+                NotifyAlarm(rule.Metric, PerfAlarmLevel.Crit, t.TotalMs, rule.CritValue, t.Ts);
                 alarms.Add(MakeAlarm(t.Ts, rule.Metric, rule, PerfAlarmLevel.Crit, t.TotalMs));
+            }
             else if (IsOverWarn(t.TotalMs, rule))
+            {
+                NotifyAlarm(rule.Metric, PerfAlarmLevel.Warn, t.TotalMs, rule.WarnValue, t.Ts);
                 alarms.Add(MakeAlarm(t.Ts, rule.Metric, rule, PerfAlarmLevel.Warn, t.TotalMs));
+            }
+            else
+            {
+                // P1-3/M-06：未越限 → 恢复通知
+                OnRecover(rule.Metric, t.TotalMs, t.Ts, rule);
+            }
         }
         return alarms;
     }

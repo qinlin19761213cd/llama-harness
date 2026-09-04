@@ -65,6 +65,7 @@ public sealed class SlotAffinity
         _unknownAutoBind = unknownAutoBind;
         _maxUnknownKeys = Math.Max(1, maxUnknownKeys);
         Load();
+        PruneStaleBindings(); // P1-2/M-05 修复：启动时淘汰过期非强占绑定（unknown 会话键随 30 天无活跃自动清理），防 _bindings 无界增长
         EnforcePreemptiveCap();
     }
 
@@ -417,8 +418,8 @@ public sealed class SlotAffinity
         try
         {
             if (!File.Exists(BindingsPath)) return;
-            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(BindingsPath));
-            var root = System.Text.Json.Nodes.JsonNode.Parse(doc.RootElement.GetRawText());
+            // P1-2/M-05 修复：去掉双重 JSON 解析（JsonDocument→GetRawText→JsonNode），直接 JsonNode.Parse
+            var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(BindingsPath));
             if (root?["bindings"] is not System.Text.Json.Nodes.JsonObject bn) return;
             foreach (var kv in bn)
             {
@@ -471,10 +472,21 @@ public sealed class SlotAffinity
         }
     }
 
-    private static bool TryGetHeader(NameValueCollection h, string name, out string value)
+    /// <summary>P1-2/M-05 修复：淘汰超过 StaleBindingDays 未活跃的非强占绑定（含 unknown_ 会话键），
+    /// 防 _bindings 无界增长（长期运行 + 大量未知 agent 会话累积）。强占绑定保留（用户显式配置，不自动删）。
+    /// 有淘汰时原子写盘持久化（锁内调用，与 SetKvCache 一致）。</summary>
+    private void PruneStaleBindings()
     {
-        // NameValueCollection 索引器对缺失键返回 null 而不抛异常，无需 try/catch（审计：原死防御删除）
-        value = h[name] ?? "";
-        return true;
+        lock (_gate)
+        {
+            var cutoff = DateTime.Now.AddDays(-StaleBindingDays);
+            bool changed = false;
+            foreach (var kv in _bindings.Where(kv => !kv.Value.Preemptive && kv.Value.LastActive < cutoff).ToList())
+            {
+                _bindings.Remove(kv.Key);
+                changed = true;
+            }
+            if (changed) Save();
+        }
     }
 }

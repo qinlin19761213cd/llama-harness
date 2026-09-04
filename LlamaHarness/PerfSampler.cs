@@ -40,16 +40,9 @@ public sealed class PerfSampler : IDisposable
     private bool _disposed;
     private volatile bool _warmupSkipped;        // 首点预热丢弃（P3-B）：首 tick 只走轻量采样，不上报到 Series/事件，避免冷启动抖动污染趋势曲线
 
-    // —— D3 修复：Ts 使用单调时钟合成（_epochLocal + Stopwatch 偏移折算的毫秒），
+    // —— D3 修复：Ts 使用单调时钟合成（P1-3/M-07 抽取为 <see cref="MonotonicClock"/>），
     //    避免 DateTime.Now 受系统时钟回拨 / 夏令时切换 / NTP 校准导致相邻采样点时间倒挂。
     //    基准在类型首次加载时固定，采样点 Ts 相对基准单调递增。
-    private static readonly DateTime _epochLocal = DateTime.Now;
-    private static readonly long _epochStopwatch = System.Diagnostics.Stopwatch.GetTimestamp();
-    private static readonly double _stopwatchTicksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
-
-    /// <summary>取当前单调递增的本地时间戳（基于 Stopwatch 偏移合成，规避 DateTime.Now 回拨）。</summary>
-    private static DateTime NowMonotonic() =>
-        _epochLocal.AddMilliseconds((long)((System.Diagnostics.Stopwatch.GetTimestamp() - _epochStopwatch) / _stopwatchTicksPerMs));
 
     /// <summary>采样时间序列（1h 滑动窗口；UI/分析器通过 Snapshot/Last 读）。</summary>
     public PerfSeries<PerfPoint> Series { get; } = new(SeriesCapacity);
@@ -150,7 +143,7 @@ public sealed class PerfSampler : IDisposable
 
         var point = new PerfPoint
         {
-            Ts = DateTime.Now,
+            Ts = MonotonicClock.Now(), // P1-3/M-07：单调时钟，规避系统时钟回拨导致采样点时间倒挂
             CpuPercent = cpu,
             MemUsedGb = memUsed,
             MemTotalGb = memTotal,

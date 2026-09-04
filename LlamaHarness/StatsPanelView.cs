@@ -19,7 +19,7 @@ public sealed class StatsPanelView : UserControl
         AutoSize = true,
         TextAlign = ContentAlignment.MiddleLeft,
         ForeColor = UiTheme.C_Primary,
-        Font = new Font("Consolas", 9F),
+        Font = UiTheme.GetFont("Consolas", 9F),
         Margin = new Padding(4, 4, 4, 4),
     };
     private readonly Button _btnClearStats = new()

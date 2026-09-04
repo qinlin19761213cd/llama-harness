@@ -24,7 +24,7 @@ public sealed class LogView : UserControl
         BorderStyle = BorderStyle.None, // 无边框，消除白边
         BackColor = UiTheme.C_TextBg,
         ForeColor = UiTheme.C_TextFg,
-        Font = new Font("Consolas", 9F),
+        Font = UiTheme.GetFont("Consolas", 9F),
     };
 
     /// <summary>

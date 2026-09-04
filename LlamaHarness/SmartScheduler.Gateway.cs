@@ -83,8 +83,8 @@ public partial class SmartScheduler
             if (!ok)
             {
                 Log?.Invoke($"Token Guard 拒绝：{note}");
-                // P2 修复项 7：Token Guard 拒绝统一走 WriteErrorV2 嵌套错误格式 {"error":{"code":"CONTEXT_OVERFLOW","message":"..."}}
-                WriteErrorV2(ctx, 400, "CONTEXT_OVERFLOW", note ?? "上下文超长");
+                // P2 修复项 7：Token Guard 拒绝统一走 WriteErrorV2 嵌套错误格式 {"error":{"code":GatewayErrorCodes.ContextOverflow,"message":"..."}}
+                WriteErrorV2(ctx, 400, GatewayErrorCodes.ContextOverflow, note ?? "上下文超长");
                 return null;
             }
             if (note != null) Log?.Invoke(note);

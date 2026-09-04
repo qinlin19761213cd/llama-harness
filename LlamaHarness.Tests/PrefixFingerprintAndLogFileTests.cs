@@ -80,25 +80,22 @@ public class PrefixFingerprintAndLogFileTests
     // ---------- E-6 LogFile 常驻写入器 ----------
 
     [Fact]
-    public async Task Append_FlushesToDiskWithinTimerInterval()
+    public void Append_FlushesToDiskWithinTimerInterval()
     {
-        // P1-H-07 修复：使用独立临时目录，避免污染全局 LogFile 单例
+        // P1-5 修复：原实现自建 FileStream 写文件再读回（恒真自证，未覆盖 LogFile/LogPipeline 任何代码）。
+        // 改为真实 LogPipeline 落盘验证：隔离目录 + Enqueue → Shutdown drain+Flush → 断言 harness.log 包含该行。
         var tempDir = TestTempPath.GetDirectory();
-        var line = $"unit-test-{Guid.NewGuid():N}";
-        var logPath = Path.Combine(tempDir, "logs", "harness.log");
-
         try
         {
-            // 直接写入测试目录的日志文件
-            using (var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read))
-            using (var sw = new StreamWriter(fs))
-            {
-                sw.WriteLine(line);
-                sw.Flush();
-            }
+            using var pipe = new LogPipeline(tempDir, QueueFullPolicy.DropNewest, joinTimeoutMs: 5000);
+            var line = $"unit-test-{Guid.NewGuid():N}";
+            Assert.True(pipe.Enqueue(LogStream.Main, DateTime.UtcNow, line), "enqueue should succeed");
+            var (completed, remaining) = pipe.Shutdown();
+            Assert.True(completed, $"shutdown drain failed, remaining={remaining}");
 
-            // 验证文件已落盘（在释放文件句柄后）
-            var content = await File.ReadAllTextAsync(logPath);
+            var logPath = Path.Combine(tempDir, "harness.log");
+            Assert.True(File.Exists(logPath), "harness.log should be created");
+            var content = File.ReadAllText(logPath);
             Assert.Contains(line, content);
         }
         finally

@@ -71,7 +71,7 @@ public sealed class PerfMonitorView : UserControl
             Text = "性能监控（1s 采样 · 5min 趋势 · 阈值告警）",
             Dock = DockStyle.Left,
             AutoSize = true,
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 10F, FontStyle.Bold),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(0, 6, 8, 0),
         };
@@ -81,7 +81,7 @@ public sealed class PerfMonitorView : UserControl
             Dock = DockStyle.Right,
             AutoSize = true,
             ForeColor = Color.FromArgb(0x88, 0x88, 0x88),
-            Font = new Font("Microsoft YaHei UI", 8F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 8F),
             Padding = new Padding(0, 10, 4, 0),
         };
         string[] metrics = { "显存", "CPU", "吞吐", "KV占用", "内存" };
@@ -103,7 +103,7 @@ public sealed class PerfMonitorView : UserControl
                 Height = 28,
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand,
-                Font = new Font("Microsoft YaHei UI", 8.5F),
+                Font = UiTheme.GetFont("Microsoft YaHei UI", 8.5F),
             };
             b.FlatAppearance.BorderSize = 0;
             b.Click += (_, _) => { _currentMetric = keys[idx]; RefreshMetricBtns(); _chart.SetData(_sampler.Series.Last(ChartPoints), _currentMetric); };
@@ -177,7 +177,7 @@ public sealed class PerfMonitorView : UserControl
             Dock = DockStyle.Fill,
             Text = "暂无告警",
             TextAlign = ContentAlignment.TopLeft,
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
             AutoSize = false,
@@ -219,7 +219,7 @@ public sealed class PerfMonitorView : UserControl
             Dock = DockStyle.Fill,
             Text = "尚未读取",
             TextAlign = ContentAlignment.TopLeft,
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = UiTheme.C_TextFg,
             Padding = new Padding(8, 4, 8, 4),
             AutoSize = false,
@@ -233,7 +233,7 @@ public sealed class PerfMonitorView : UserControl
             BackColor = UiTheme.C_Btn,
             ForeColor = Color.White,
             Cursor = Cursors.Hand,
-            Font = new Font("Microsoft YaHei UI", 9F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F),
         };
         btnRefreshLog.FlatAppearance.BorderSize = 0;
         btnRefreshLog.Click += (_, _) => RefreshLogSummary();
@@ -482,7 +482,7 @@ public sealed class PerfMonitorView : UserControl
             Height = 18,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.FromArgb(0xAA, 0xAA, 0xAA),
-            Font = new Font("Microsoft YaHei UI", 8F),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 8F),
             Padding = new Padding(6, 2, 2, 0),
         };
         valueLabel = new Label
@@ -491,7 +491,7 @@ public sealed class PerfMonitorView : UserControl
             Text = "—",
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = UiTheme.C_Green, // 正常状态统一亮绿（v2.19 规范）
-            Font = new Font("Consolas", 11F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Consolas", 11F, FontStyle.Bold),
             Padding = new Padding(6, 0, 2, 2),
         };
         cell.Controls.Add(valueLabel);

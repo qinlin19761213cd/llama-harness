@@ -80,7 +80,7 @@ public sealed class RequestTimingTracker
             if (total > _maxTotalTicks) _maxTotalTicks = total;
             rt = new RequestTiming
             {
-                Ts = DateTime.Now,
+                Ts = MonotonicClock.Now(), // P1-3/M-07：单调时钟，与 PerfSampler 采样点同源
                 App = e.App,
                 Path = e.Path,
                 Success = success,

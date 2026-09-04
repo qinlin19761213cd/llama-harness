@@ -89,7 +89,7 @@ public sealed class StatusPanelView : UserControl
                 Dock = DockStyle.Top,
                 Height = 26,
                 ForeColor = UiTheme.C_Primary,
-                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+                Font = UiTheme.GetFont("Microsoft YaHei UI", 9F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,
             };
             content.Dock = DockStyle.Fill;
@@ -102,13 +102,13 @@ public sealed class StatusPanelView : UserControl
         _lblStatus = new Label
         {
             Text = "空闲",
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = C_DetailOk,
         };
         _lblModuleState = new Label
         {
             Text = "网关 已停止",
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 10F, FontStyle.Bold),
             ForeColor = Color.White,
             BackColor = UiTheme.C_Red,
             Padding = new Padding(8, 4, 8, 4),
@@ -116,31 +116,31 @@ public sealed class StatusPanelView : UserControl
         _lblResSummary = new Label
         {
             Text = "CPU: —\n内存: —\n显存: —",
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = C_DetailOk,
         };
         _lblTokenSummary = new Label
         {
             Text = "请求: 0\n输入: —\n输出: —",
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = C_DetailOk,
         };
         _lblSlotSummary = new Label
         {
             Text = "槽位: —",
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = C_DetailOk,
         };
         _lblRestoreHit = new Label
         {
             Text = "Restore: 未启用",
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = C_DetailOk,
         };
         _lblThinking = new Label
         {
             Text = "思考: 极速",
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ForeColor = C_DetailOk,
         };
 
@@ -159,7 +159,7 @@ public sealed class StatusPanelView : UserControl
             Dock = DockStyle.Top,
             Height = 26,
             ForeColor = UiTheme.C_Primary,
-            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+            Font = UiTheme.GetFont("Microsoft YaHei UI", 9F, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
         };
         _inFlightPanel = new FlowLayoutPanel
@@ -250,13 +250,13 @@ public sealed class StatusPanelView : UserControl
     /// <summary>刷新服务阶段卡片在途任务明细（InFlightChanged 事件驱动，UI 线程）：每个在途任务一行「应用 · 方法 路径」。</summary>
     public void RefreshInFlightTasks()
     {
-        _inFlightPanel.Controls.Clear();
+        _inFlightPanel.Controls.DisposeChildren();
         foreach (var t in _scheduler.GetInFlightTasks())
         {
             var lbl = new Label
             {
                 AutoSize = true,
-                Font = new Font("Consolas", 9F),
+                Font = UiTheme.GetFont("Consolas", 9F),
                 ForeColor = C_DetailOk,
                 Margin = new Padding(0, 1, 0, 1),
                 Text = $"• {(t.App ?? "未知")} · {t.Method} {t.Path}",

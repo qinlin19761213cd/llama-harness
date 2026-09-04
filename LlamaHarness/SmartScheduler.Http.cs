@@ -320,7 +320,7 @@ public partial class SmartScheduler
         // 休眠释放进行中：不转发（服务正被终止），提示客户端稍后重试
         if (CurrentPhase == Phase.Sleeping)
         {
-            WriteErrorV2(ctx, 502, "SERVICE_SLEEPING", "LLM 服务正在休眠释放，请稍后重试。");
+            WriteErrorV2(ctx, 502, GatewayErrorCodes.ServiceSleeping, "LLM 服务正在休眠释放，请稍后重试。");
             return;
         }
 
@@ -331,7 +331,7 @@ public partial class SmartScheduler
         // 把刚休眠的服务反复唤醒（唤醒→15分钟倒计时→再休眠→再唤醒循环）
         if (!isInference && !_server.IsRunning)
         {
-            WriteErrorV2(ctx, 503, "SERVICE_NOT_RUNNING", "LLM 服务处于待机/休眠状态，仅推理请求可触发唤醒。");
+            WriteErrorV2(ctx, 503, GatewayErrorCodes.ServiceNotRunning, "LLM 服务处于待机/休眠状态，仅推理请求可触发唤醒。");
             return;
         }
 
@@ -368,13 +368,13 @@ public partial class SmartScheduler
             // P2 修复项 10：编码校验（在触发唤醒前尽早拒绝非法请求，避免为不合法请求付出唤醒代价）
             if (!TryValidateEncoding(req))
             {
-                WriteErrorV2(ctx, 415, "UNSUPPORTED_MEDIA_TYPE", "请求体编码必须是 UTF-8。");
+                WriteErrorV2(ctx, 415, GatewayErrorCodes.UnsupportedMediaType, "请求体编码必须是 UTF-8。");
                 return;
             }
             // P2 修复项 4：请求体大小预检（ContentLength64 声明时提前拒绝，避免占内存读入）
             if (TryValidateBodySize(req))
             {
-                WriteErrorV2(ctx, 413, "REQUEST_BODY_TOO_LARGE", $"请求体超过 {MaxRequestBodyBytesHttp / (1024 * 1024)} MB 上限。");
+                WriteErrorV2(ctx, 413, GatewayErrorCodes.RequestBodyTooLarge, $"请求体超过 {MaxRequestBodyBytesHttp / (1024 * 1024)} MB 上限。");
                 return;
             }
 
@@ -416,7 +416,7 @@ public partial class SmartScheduler
         {
             // P2 修复项 11：整体超时到期或被上层 CTS 取消——统一返回 504
             Log?.Invoke($"请求超时或取消（RequestId={requestId}）。");
-            try { WriteErrorV2(ctx, 504, "REQUEST_TIMEOUT", $"请求处理超时（>{HandlerTimeoutSeconds}s）。"); } catch { }
+            try { WriteErrorV2(ctx, 504, GatewayErrorCodes.RequestTimeout, $"请求处理超时（>{HandlerTimeoutSeconds}s）。"); } catch { }
         }
         catch (Exception ex)
         {

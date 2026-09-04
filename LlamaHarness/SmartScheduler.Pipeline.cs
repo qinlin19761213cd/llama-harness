@@ -24,14 +24,14 @@ public partial class SmartScheduler
         var req = ctx.Request;
         if (_stopRequested)                       // 修复9：停止后拒绝转发，避免新请求挂到已被关断的后端
         {
-            WriteErrorV2(ctx, 503, "SERVICE_UNAVAILABLE", "调度器正在停止，请重试。");
+            WriteErrorV2(ctx, 503, GatewayErrorCodes.ServiceUnavailable, "调度器正在停止，请重试。");
             return;
         }
         // M-06 修复：_backendPort==0（尚未唤醒）时构造的 URI 端口为 0，导致异常路径含端口 0 字符串；显式拒绝
         if (_backendPort <= 0)
         {
             Log?.Invoke("ForwardAsync 拒绝：后端尚未就绪（_backendPort=0），请检查唤醒流程。");
-            WriteErrorV2(ctx, 503, "BACKEND_NOT_READY", "后端服务尚未就绪。");
+            WriteErrorV2(ctx, 503, GatewayErrorCodes.BackendNotReady, "后端服务尚未就绪。");
             return;
         }
         // M-C3 修复：SSRF 防护——校验 RawUrl 必须是纯路径（以 `/` 开头，禁止 `//` 协议相对 URL），
@@ -39,12 +39,12 @@ public partial class SmartScheduler
         string rawUrl = req.RawUrl ?? "/";
         if (rawUrl.Length == 0 || rawUrl[0] != '/')
         {
-            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "请求路径必须以 / 开头。");
+            WriteErrorV2(ctx, 400, GatewayErrorCodes.InvalidRequest, "请求路径必须以 / 开头。");
             return;
         }
         if (rawUrl.Length >= 2 && rawUrl[1] == '/')
         {
-            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "禁止协议相对 URL（可能指向外网主机）。");
+            WriteErrorV2(ctx, 400, GatewayErrorCodes.InvalidRequest, "禁止协议相对 URL（可能指向外网主机）。");
             return;
         }
         Uri uri;
@@ -54,14 +54,14 @@ public partial class SmartScheduler
         }
         catch (UriFormatException)
         {
-            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "请求路径格式非法。");
+            WriteErrorV2(ctx, 400, GatewayErrorCodes.InvalidRequest, "请求路径格式非法。");
             return;
         }
         // 二次防御：解析后的 URI host 必须是 localhost（防 URI 解析器异常时误指向外部）
         if (!string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
             && uri.Host != "127.0.0.1")
         {
-            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "请求目标必须是本机后端。");
+            WriteErrorV2(ctx, 400, GatewayErrorCodes.InvalidRequest, "请求目标必须是本机后端。");
             return;
         }
         string path = req.Url?.AbsolutePath ?? "";
@@ -79,7 +79,7 @@ public partial class SmartScheduler
         {
             // M-03 规范：不透传 ex.Message（可能含本机信息），错误码统一 REQUEST_BODY_TOO_LARGE
             Log?.Invoke($"[WARN] 请求体超上限被拒（Pipeline 兜底 64MB）：{ex.Message}");
-            WriteErrorV2(ctx, 413, "REQUEST_BODY_TOO_LARGE", $"请求体超过 {MaxRequestBodyBytes / (1024 * 1024)} MB 上限。");
+            WriteErrorV2(ctx, 413, GatewayErrorCodes.RequestBodyTooLarge, $"请求体超过 {MaxRequestBodyBytes / (1024 * 1024)} MB 上限。");
             return;
         }
 
@@ -218,7 +218,7 @@ public partial class SmartScheduler
                 catch (HttpRequestException)
                 {
                     Log?.Invoke("[WARN] 400 自愈重发连接失败（连接层异常，走统一 V2 错误响应）");
-                    WriteErrorV2(ctx, 502, "SELF_HEAL_RECONNECT_FAILED", "400 自愈重发连接失败。");
+                    WriteErrorV2(ctx, 502, GatewayErrorCodes.SelfHealReconnectFailed, "400 自愈重发连接失败。");
                     return true;
                 }
                 using (retryResp)

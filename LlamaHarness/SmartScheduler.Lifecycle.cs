@@ -199,7 +199,16 @@ public partial class SmartScheduler
             Log?.Invoke($"KV Cache 持久化已启用：路径 {_cfg.KvCachePath}（驱逐自动 save，重绑定自动 restore，休眠前自动 save，唤醒后自动 restore）。");
 
         // 新进程槽位 KV 全空：清空「本轮已服务」+「首请求存档」+「快照新鲜度」标记 → 唤醒后各 key 首次请求触发 restore 自愈（跳过全量 prefill），autoPre key 重新触发首请求存档
-        lock (_kvStateGate) { _servedKeysThisRun.Clear(); _savedKeysThisRun.Clear(); _freshSnapshotKeys.Clear(); }
+        // P1-2/M-04 修复：前缀哈希/漂移定位字典随新进程一并清空——旧进程会话的哈希与漂移信息对全新槽位无意义，
+        //   不清会在极端情况下导致漂移判定基于过期基线（只增不减的滞留状态）。
+        lock (_kvStateGate)
+        {
+            _servedKeysThisRun.Clear();
+            _savedKeysThisRun.Clear();
+            _freshSnapshotKeys.Clear();
+            _prefixHashes.Clear();
+            _lastDriftDiff.Clear();
+        }
     }
 
     /// <summary>轮询后端 /v1/models 直至就绪（最长 5 分钟），期间进程退出立即报错。

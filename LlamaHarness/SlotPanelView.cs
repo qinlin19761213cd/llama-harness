@@ -42,7 +42,7 @@ public sealed class SlotPanelView : UserControl
             BorderStyle = BorderStyle.None,
             BackColor = UiTheme.C_TextBg,
             ForeColor = UiTheme.C_TextFg,
-            Font = new Font("Consolas", 9F),
+            Font = UiTheme.GetFont("Consolas", 9F),
             ScrollBars = RichTextBoxScrollBars.Vertical,
             WordWrap = false,
         };
