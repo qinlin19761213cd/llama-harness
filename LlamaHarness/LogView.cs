@@ -27,13 +27,25 @@ public sealed class LogView : UserControl
         Font = new Font("Consolas", 9F),
     };
 
+    /// <summary>
+    /// 问题 17 修复：日志级别过滤（默认 ShowAll 向后兼容）。
+    /// 文件层 Append 仍写入所有级别（磁盘审计需完整），仅 UI 显示层按 Level 过滤。
+    /// Warn/Debug 场景下可屏蔽普通 Info 降低视觉噪声。
+    /// </summary>
+    public LogLevelFilter LevelFilter { get; set; } = LogLevelFilter.ShowAll;
+
+    /// <summary>
+    /// 问题 18 修复：自动滚动到最新一行（默认 true，与旧行为一致）。
+    /// 排查历史日志时若用户手动上滚，可临时置 false 让 UI 停在当前位置；排查完再置 true 恢复跟随。
+    /// </summary>
+    public bool AutoFollow { get; set; } = true;
+
     public bool HasPending { get { lock (_logQueue) return _logQueue.Count > 0; } }
     public LogView()
     {
         Dock = DockStyle.Fill;
         Controls.Add(TxtLog);
     }
-
 
     /// <summary>追加一行带时间戳的日志并按级别着色（正常绿/警告黄/错误红），自动滚到底部。可来自任意线程。
     /// 防抖：日志先入队列，UI 定时器每 150ms 批量消费，减少重绘闪烁。</summary>
@@ -74,13 +86,25 @@ public sealed class LogView : UserControl
         // M-13：防重入——如果已经在 Flush 中，直接返回（避免 AppendText 触发事件导致递归）
         if (_isFlushing) return;
 
+        // 问题 17：读取当前过滤级别（快照值，避免消费过程中被 UI 线程其他操作切换）
+        var levelFilter = LevelFilter;
+
         List<(string line, string entry)> batch;
         lock (_logQueue)
         {
             if (_logQueue.Count == 0) return; // 无新日志，直接返回（定时器常驻）
-            batch = new List<(string line, string entry)>(_logQueue.Count);
-            while (_logQueue.Count > 0) batch.Add(_logQueue.Dequeue());
+            batch = new List<(string line, string entry)>();
+            // 问题 17：按级别过滤——不显示的条目丢弃不入 UI（文件层已落盘）
+            while (_logQueue.Count > 0)
+            {
+                var item = _logQueue.Dequeue();
+                if (PassFilter(LogFile.Classify(item.line), levelFilter))
+                    batch.Add(item);
+            }
         }
+
+        // 全部被过滤 → 无内容需显示，直接返回（不设 _isFlushing 避免 M-13 残留）
+        if (batch.Count == 0) return;
 
         // M-13 回归修复：防重入标志仅在真正消费队列时设置（原实现空队列 return 时 _isFlushing
         // 永久残留 true，导致后续所有 Flush 直接返回、UI 日志永久停摆）。空队列路径不设标志。
@@ -117,10 +141,13 @@ public sealed class LogView : UserControl
                 };
             }
 
-            // 滚动到底部
-            TxtLog.SelectionStart = TxtLog.TextLength;
-            TxtLog.SelectionLength = 0;
-            TxtLog.ScrollToCaret();
+            // 问题 18：AutoFollow=false 时不强制滚到底部（用户可能正在翻阅历史）
+            if (AutoFollow)
+            {
+                TxtLog.SelectionStart = TxtLog.TextLength;
+                TxtLog.SelectionLength = 0;
+                TxtLog.ScrollToCaret();
+            }
         }
         catch
         {
@@ -132,4 +159,46 @@ public sealed class LogView : UserControl
             _isFlushing = false;
         }
     }
+
+    /// <summary>
+    /// 问题 17：判定一行日志是否通过当前过滤级别。
+    /// LogFile.Level 只有 Warn/Error/Info 三档（无 Debug），
+    /// LevelFilter 提供 5 档可选视图；无对应关系的组合默认放行以保兼容。
+    /// </summary>
+    private static bool PassFilter(LogFile.Level level, LogLevelFilter filter)
+    {
+        return (level, filter) switch
+        {
+            // 全部显示
+            (_, LogLevelFilter.ShowAll) => true,
+            // 仅错误
+            (LogFile.Level.Error, LogLevelFilter.ErrorsOnly) => true,
+            (_, LogLevelFilter.ErrorsOnly) => false,
+            // 错误 + 警告
+            (LogFile.Level.Error, LogLevelFilter.ErrorAndWarn) => true,
+            (LogFile.Level.Warn, LogLevelFilter.ErrorAndWarn) => true,
+            (_, LogLevelFilter.ErrorAndWarn) => false,
+            // 警告及以上
+            (LogFile.Level.Error, LogLevelFilter.WarnAndAbove) => true,
+            (LogFile.Level.Warn, LogLevelFilter.WarnAndAbove) => true,
+            (_, LogLevelFilter.WarnAndAbove) => false,
+            // 全部非 Info（等价 WarnAndAbove）
+            (LogFile.Level.Info, LogLevelFilter.NonInfo) => false,
+            (_, LogLevelFilter.NonInfo) => true,
+            _ => true,
+        };
+    }
+}
+
+/// <summary>
+/// 问题 17 修复：日志显示级别过滤枚举。
+/// ShowAll 为默认，与历史行为兼容；其余档位仅供 UI 按需切换使用。
+/// </summary>
+public enum LogLevelFilter
+{
+    ShowAll,       // 全部显示（默认）
+    ErrorsOnly,    // 仅显示 Error
+    ErrorAndWarn,  // 显示 Error + Warn
+    WarnAndAbove,  // 显示 Warn 及以上
+    NonInfo,       // 隐藏普通 Info（等价 WarnAndAbove，命名面向"过滤噪声"场景）
 }

@@ -22,7 +22,48 @@ public partial class SmartScheduler
     private async Task ForwardAsync(HttpListenerContext ctx, string? rtId) // v2.21：性能埋点 id（仅推理请求非空）
     {
         var req = ctx.Request;
-        var uri = new Uri($"http://localhost:{_backendPort}{req.RawUrl}");
+        if (_stopRequested)                       // 修复9：停止后拒绝转发，避免新请求挂到已被关断的后端
+        {
+            WriteErrorV2(ctx, 503, "SERVICE_UNAVAILABLE", "调度器正在停止，请重试。");
+            return;
+        }
+        // M-06 修复：_backendPort==0（尚未唤醒）时构造的 URI 端口为 0，导致异常路径含端口 0 字符串；显式拒绝
+        if (_backendPort <= 0)
+        {
+            Log?.Invoke("ForwardAsync 拒绝：后端尚未就绪（_backendPort=0），请检查唤醒流程。");
+            WriteErrorV2(ctx, 503, "BACKEND_NOT_READY", "后端服务尚未就绪。");
+            return;
+        }
+        // M-C3 修复：SSRF 防护——校验 RawUrl 必须是纯路径（以 `/` 开头，禁止 `//` 协议相对 URL），
+        // 并对解析结果做二次防御（host 必须是 localhost / 127.0.0.1）。
+        string rawUrl = req.RawUrl ?? "/";
+        if (rawUrl.Length == 0 || rawUrl[0] != '/')
+        {
+            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "请求路径必须以 / 开头。");
+            return;
+        }
+        if (rawUrl.Length >= 2 && rawUrl[1] == '/')
+        {
+            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "禁止协议相对 URL（可能指向外网主机）。");
+            return;
+        }
+        Uri uri;
+        try
+        {
+            uri = new Uri($"http://localhost:{_backendPort}{rawUrl}");
+        }
+        catch (UriFormatException)
+        {
+            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "请求路径格式非法。");
+            return;
+        }
+        // 二次防御：解析后的 URI host 必须是 localhost（防 URI 解析器异常时误指向外部）
+        if (!string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+            && uri.Host != "127.0.0.1")
+        {
+            WriteErrorV2(ctx, 400, "INVALID_REQUEST", "请求目标必须是本机后端。");
+            return;
+        }
         string path = req.Url?.AbsolutePath ?? "";
 
         // ① 读取完整请求体（非流式检测 / 强制流式改写需要）；GET 无请求体
@@ -36,7 +77,9 @@ public partial class SmartScheduler
         }
         catch (InvalidDataException ex)
         {
-            RequestProcessor.WriteError(ctx, 413, ex.Message);
+            // M-03 规范：不透传 ex.Message（可能含本机信息），错误码统一 REQUEST_BODY_TOO_LARGE
+            Log?.Invoke($"[WARN] 请求体超上限被拒（Pipeline 兜底 64MB）：{ex.Message}");
+            WriteErrorV2(ctx, 413, "REQUEST_BODY_TOO_LARGE", $"请求体超过 {MaxRequestBodyBytes / (1024 * 1024)} MB 上限。");
             return;
         }
 
@@ -75,8 +118,12 @@ public partial class SmartScheduler
             var outResp = ctx.Response;
 
             // 400 上下文超限自愈（激进裁剪 + KV 废弃 + 重发）；已处理则返回
-            if (await TryRecoverContextOverflowAsync(resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey))
+            // B-04 修复：400 自愈路径也需打点 timing.Complete，避免 rtId 泄漏导致统计偏差
+            if (await TryRecoverContextOverflowAsync(ctx, resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey))
+            {
+                if (rtId != null) _timing.Complete(rtId, success: false);
                 return;
+            }
 
             // 响应管道 + 崩溃恢复 + 断点快照清理 + 存档（含客户端断开兜底）
             await PumpResponseAsync(resp, outResp, uri, path, finalBody, effStreaming, routedSlot, routedKey);
@@ -115,7 +162,7 @@ public partial class SmartScheduler
     /// 前置 TokenGuard 是快速预估（BuildMessagesText 不含 tools/Jinja 模板），ReservedPromptOverhead 预留不足时仍可能击穿；
     /// 此分支是最后一道防线。返回 true = 已处理（调用方应 return）；false = 未触发自愈（继续正常流程）。</summary>
     private async Task<bool> TryRecoverContextOverflowAsync(
-        HttpResponseMessage resp, HttpListenerResponse outResp, HttpListenerRequest req, Uri uri,
+        HttpListenerContext ctx, HttpResponseMessage resp, HttpListenerResponse outResp, HttpListenerRequest req, Uri uri,
         string path, JsonObject? root, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey)
     {
         if (resp.StatusCode != System.Net.HttpStatusCode.BadRequest || !RequestProcessor.IsChatCompletions(path) || root == null || finalBody == null)
@@ -123,7 +170,8 @@ public partial class SmartScheduler
         // 上面 guard 已保证：BadRequest && IsChatCompletions && root/finalBody 非空，直接进入自愈
         {
             string errBody = "";
-            try { errBody = await resp.Content.ReadAsStringAsync(); } catch { /* 读取失败按非超限处理 */ }
+            try { errBody = await resp.Content.ReadAsStringAsync(); }
+            catch (Exception ex) { Log?.Invoke($"[WARN] 400 自愈分支：读取后端错误体失败，按非超限处理（{ex.GetType().Name}: {ex.Message}）"); }
             if (errBody.Contains("exceeds the available context size", StringComparison.OrdinalIgnoreCase))
             {
                 Log?.Invoke("[EDGE-CASE-CONTEXT-OVERFLOW-400] llama.cpp 上下文超限 400，触发自愈（aggressive trim + KV 废弃 + 重发）");
@@ -151,7 +199,11 @@ public partial class SmartScheduler
                         lock (_kvStateGate) _prefixHashes.Remove(routedKey);
                         Log?.Invoke($"[TOKEN-GUARD-FATAL] KV 缓存废弃：{routedKey}（强制全量 prefill）");
                     }
-                    catch { /* 清理失败不影响重发 */ }
+                    catch (Exception ex)
+                    {
+                        // P3-D：KV 废弃失败不影响重发主流程，但需可观测输出（否则线上难排查 KV 残留）
+                        Log?.Invoke($"[WARN] 400 自愈分支：KV 缓存废弃失败（{routedKey}）：{ex.GetType().Name} {ex.Message}（不阻塞重发）");
+                    }
                 }
                 // 3. 重新提交请求（用裁剪后的 root 序列化）
                 string newBody = modified ? root.ToJsonString() : finalBody;
@@ -165,9 +217,8 @@ public partial class SmartScheduler
                 }
                 catch (HttpRequestException)
                 {
-                    outResp.StatusCode = 502;
-                    outResp.ContentType = "application/json";
-                    await outResp.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"error\":\"400 自愈重发连接失败\"}"));
+                    Log?.Invoke("[WARN] 400 自愈重发连接失败（连接层异常，走统一 V2 错误响应）");
+                    WriteErrorV2(ctx, 502, "SELF_HEAL_RECONNECT_FAILED", "400 自愈重发连接失败。");
                     return true;
                 }
                 using (retryResp)
@@ -187,7 +238,8 @@ public partial class SmartScheduler
                     {
                         // 重发仍失败：返回错误
                         string retryErr = "";
-                        try { retryErr = await retryResp.Content.ReadAsStringAsync(); } catch { }
+                        try { retryErr = await retryResp.Content.ReadAsStringAsync(); }
+                        catch (Exception ex) { Log?.Invoke($"[WARN] 400 自愈重发：读取重发响应错误体失败，回传空 body（{(int)retryResp.StatusCode}，{ex.GetType().Name}: {ex.Message}）"); }
                         outResp.ContentType = "application/json";
                         var bytes2 = System.Text.Encoding.UTF8.GetBytes(retryErr);
                         outResp.ContentLength64 = bytes2.Length;
@@ -235,7 +287,11 @@ public partial class SmartScheduler
                         _kvCache?.DeleteCache(routedKey);
                         Log?.Invoke($"[KV-CLEANUP] 续接成功，清理过期断点快照：{routedKey}");
                     }
-                    catch { /* 清理失败不影响主流程 */ }
+                    catch (Exception ex)
+                    {
+                        // P3-D：清理失败不影响主流程，但需可观测输出（残留断点快照会影响下次 restore）
+                        Log?.Invoke($"[WARN] KV-CLEANUP 清理失败（{routedKey}）：{ex.GetType().Name} {ex.Message}（不阻塞主流程）");
+                    }
                 }
             }
 
@@ -361,15 +417,20 @@ public partial class SmartScheduler
         else
         {
             // 5xx 错误响应：判定是否 bad_alloc 崩溃（恢复启用 → 不转发，交给崩溃恢复）
-            string errBody = System.Text.Encoding.UTF8.GetString(await resp.Content.ReadAsByteArrayAsync());
+            string errBody = Encoding.UTF8.GetString(await resp.Content.ReadAsByteArrayAsync());
+            // 修复4：聚合最近 8 行输出与 errBody 关键词，避免 OOM 提示跨行/跨流时被漏识别
             bool isBadAlloc = errBody.Contains("bad allocation", StringComparison.OrdinalIgnoreCase)
-                             || CrashRecovery.WasBadAlloc(BadAllocEvidenceWindow);
+                              || CrashRecovery.WasBadAlloc(BadAllocEvidenceWindow)
+                              || RecentOutputHasBadAlloc();
             if (isBadAlloc && _cfg.CrashRecoveryEnabled && effStreaming)
             {
                 completed = false; // 交给 TryCrashRecoverAsync
             }
             else
             {
+                // P3-D：后端 5xx 错误响应原样透传，但加 X-Error-Source: upstream 标记来源，
+                // 让客户端/监控区分是本机网关错误（走 V2 格式）还是上游 llama-server 直返的原始 JSON。
+                outResp.Headers["X-Error-Source"] = "upstream";
                 var bytes = System.Text.Encoding.UTF8.GetBytes(errBody);
                 outResp.ContentType = "application/json";
                 outResp.ContentLength64 = bytes.Length;
@@ -406,6 +467,10 @@ public partial class SmartScheduler
             var dumpBlock = $"POST {path}\n--- Headers ---\n{headers}--- Body ---\n{bodyStr}\n{new string('=', 80)}\n\n";
             LogFile.DumpAppend(dumpBlock); // 异步管道：请求路径零磁盘 I/O
         }
-        catch { /* dump 失败不影响主流程 */ }
+        catch (Exception ex)
+        {
+            // P3-D：dump 失败不影响主流程，但需可观测输出（否则请求分析静默失效，配置已开却无日志产出）
+            Log?.Invoke($"[WARN] 请求 dump 失败：{ex.GetType().Name} {ex.Message}（不阻塞主流程）");
+        }
     }
 }

@@ -14,6 +14,34 @@ public sealed class PerfAlarm
     public PerfAlarmLevel Level { get; init; }
     /// <summary>触发时的指标值。</summary>
     public double Value { get; init; }
+    /// <summary>触发阈值（Crit 级取 CritValue，Warn 级取 WarnValue）。</summary>
+    public double Threshold { get; init; }
     /// <summary>人类可读描述（中文）。</summary>
     public string Message { get; init; } = "";
+}
+
+/// <summary>
+/// 告警事件参数（P3-A）：AlarmRaised / AlarmRecovered 事件的载荷。
+/// PreviousLevel 表示状态机迁移前的级别（Raise 时通常 None，Recovered 时通常 Warn/Crit）。
+/// </summary>
+public sealed class PerfAlarmEventArgs : EventArgs
+{
+    public string Metric { get; }
+    public PerfAlarmLevel Level { get; }
+    public double Value { get; }
+    /// <summary>触发阈值（Crit 级取 CritValue，Warn 级取 WarnValue）。</summary>
+    public double Threshold { get; }
+    public DateTime Timestamp { get; }
+    /// <summary>迁移前的告警级别（Raise 时 None；Recovered 时 Warn/Crit）。</summary>
+    public PerfAlarmLevel? PreviousLevel { get; }
+
+    public PerfAlarmEventArgs(string metric, PerfAlarmLevel level, double value, double threshold, DateTime timestamp, PerfAlarmLevel? previousLevel)
+    {
+        Metric = metric;
+        Level = level;
+        Value = value;
+        Threshold = threshold;
+        Timestamp = timestamp;
+        PreviousLevel = previousLevel;
+    }
 }

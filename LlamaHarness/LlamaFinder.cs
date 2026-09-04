@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace LlamaHarness;
 
 /// <summary>
@@ -67,49 +65,128 @@ public static class LlamaFinder
     /// </summary>
     public static string BuildArgs(AppConfig cfg, int? portOverride = null, int? threadsOverride = null)
     {
-        var sb = new StringBuilder();
-        sb.Append($"-m \"{cfg.ModelPath}\"");
-        sb.Append($" --port {(portOverride ?? cfg.Port)}");
-        sb.Append($" -c {cfg.CtxSize}");
-        sb.Append($" -ngl {cfg.Ngl}");
-        sb.Append($" --parallel {cfg.Parallel}");
+        // B1/B2 修复：先按参数 token 组装 List<string>，再对每个 token 独立 EscapeArg 输出。
+        // 这样 llama.cpp 侧的 arg 解析器看到的每个 flag / value 都是独立 token，
+        // 值里即使含 `"` 或空格也不会被误当作新的 flag（避免命令行参数注入）。
+        var args = new List<string>();
+        args.Add("-m");
+        args.Add(EscapeArg(cfg.ModelPath));
+        args.Add("--port");
+        args.Add((portOverride ?? cfg.Port).ToString());
+        args.Add("-c");
+        args.Add(cfg.CtxSize.ToString());
+        args.Add("-ngl");
+        args.Add(cfg.Ngl.ToString());
+        args.Add("--parallel");
+        args.Add(cfg.Parallel.ToString());
         // Prompt-Cache 管控（RAMDisk 快照全权接管模式）：--cache-ram 0 关闭内置主机内存 prompt-cache（消除 LRU 驱逐虚假 KV-MISS），
         // --no-cache-idle-slots 禁止 release 后空闲 slot 自动存入 prompt cache。回滚旧双兜底模式：CacheRamMiB=8192 + NoCacheIdleSlots=false。
-        sb.Append($" --cache-ram {cfg.CacheRamMiB}");
+        args.Add("--cache-ram");
+        args.Add(cfg.CacheRamMiB.ToString());
         if (cfg.NoCacheIdleSlots)
-            sb.Append(" --no-cache-idle-slots");
+            args.Add("--no-cache-idle-slots");
         // KV Cache 持久化：配置了缓存路径时，启用 /slots 端点 + 指定保存目录（单槽/多槽均需要）
         if (!string.IsNullOrWhiteSpace(cfg.KvCachePath))
         {
-            sb.Append(" --slots");
-            sb.Append($" --slot-save-path \"{cfg.KvCachePath.Trim()}\""); // 引号包裹：路径含空格（如 "C:\temp cache"）不致断裂
+            args.Add("--slots");
+            // 路径归一化 + 父目录校验：拒绝含 `"`/特殊字符的原始字符串，父目录必须存在且为绝对路径。
+            var normalizedKv = cfg.KvCachePath.Trim();
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(normalizedKv);
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException($"KV Cache 路径非法：{normalizedKv}", nameof(cfg.KvCachePath), ex);
+            }
+            var parentDir = Path.GetDirectoryName(fullPath) ?? "";
+            if (!Path.IsPathRooted(parentDir))
+                throw new ArgumentException($"KV Cache 路径必须为绝对路径：{fullPath}", nameof(cfg.KvCachePath));
+            if (!Directory.Exists(parentDir))
+                throw new ArgumentException($"KV Cache 父目录不存在：{parentDir}", nameof(cfg.KvCachePath));
+            args.Add("--slot-save-path");
+            args.Add(EscapeArg(fullPath));
         }
         if (cfg.NoKvUnified)
-            sb.Append(" --no-kv-unified");
+            args.Add("--no-kv-unified");
         int threads = threadsOverride ?? cfg.Threads;
         if (threads > 0)
-            sb.Append($" -t {threads}");
+        {
+            args.Add("-t");
+            args.Add(threads.ToString());
+        }
         // Prefill 吞吐参数（结构化：阶段二调参只改 config 值，代码零改动）
         if (!string.IsNullOrWhiteSpace(cfg.LoadMode))
-            sb.Append($" --load-mode {cfg.LoadMode.Trim()}");
+        {
+            args.Add("--load-mode");
+            args.Add(cfg.LoadMode.Trim());
+        }
         if (cfg.UbatchSize > 0)
-            sb.Append($" --ubatch-size {cfg.UbatchSize}");
+        {
+            args.Add("--ubatch-size");
+            args.Add(cfg.UbatchSize.ToString());
+        }
         if (cfg.BatchSize > 0)
-            sb.Append($" --batch-size {cfg.BatchSize}");
+        {
+            args.Add("--batch-size");
+            args.Add(cfg.BatchSize.ToString());
+        }
         if (!string.IsNullOrWhiteSpace(cfg.CacheTypeKv))
-            sb.Append($" --cache-type-k {cfg.CacheTypeKv.Trim()} --cache-type-v {cfg.CacheTypeKv.Trim()}");
+        {
+            var ct = cfg.CacheTypeKv.Trim();
+            args.Add("--cache-type-k");
+            args.Add(ct);
+            args.Add("--cache-type-v");
+            args.Add(ct);
+        }
         if (cfg.FlashAttn)
-            sb.Append(" --flash-attn on");
+        {
+            args.Add("--flash-attn");
+            args.Add("on");
+        }
         if (!string.IsNullOrWhiteSpace(cfg.SpecType))
         {
-            sb.Append($" --spec-type {cfg.SpecType.Trim()}");
+            args.Add("--spec-type");
+            args.Add(cfg.SpecType.Trim());
             if (cfg.SpecDraftNMax > 0)
-                sb.Append($" --spec-draft-n-max {cfg.SpecDraftNMax}");
+            {
+                args.Add("--spec-draft-n-max");
+                args.Add(cfg.SpecDraftNMax.ToString());
+            }
         }
         if (cfg.BatchThreads > 0)
-            sb.Append($" --tb {cfg.BatchThreads}");
+        {
+            args.Add("--tb");
+            args.Add(cfg.BatchThreads.ToString());
+        }
+        // M-P1 修复：ExtraArgs 白名单过滤——防止命令行参数注入。
+        // B1/B2 收紧：剔除 `"`、`[`、`]`——引号允许时值边界可被绕过（注入额外 flag），中括号允许时值可含 Windows glob。
+        // 允许：字母/数字、下划线、点、连字符、冒号、空格、等号、斜杠、反斜杠。
+        // 拒绝：`& | ; ^ < > ( ) % $ * ? " [ ]` 等 shell / 引号 / glob 元字符。
         if (!string.IsNullOrWhiteSpace(cfg.ExtraArgs))
-            sb.Append(' ').Append(cfg.ExtraArgs.Trim());
-        return sb.ToString();
+        {
+            char[] trimmed = cfg.ExtraArgs.Trim()
+                .Where(c => char.IsLetterOrDigit(c)
+                    || c == '_' || c == '.' || c == '-' || c == ':'
+                    || c == ' ' || c == '\t'
+                    || c == '=' || c == '/' || c == '\\').ToArray();
+            string extra = new string(trimmed).Trim();
+            if (extra.Length > 0)
+                args.Add(extra);
+        }
+        return string.Join(" ", args);
+    }
+
+    /// <summary>
+    /// Windows CreateProcess / llama.cpp arg 解析双兼容转义：
+    /// 若参数含空格、制表符或双引号，用双引号包裹并把内部 `"` 转义为 `\"`；否则原样返回。
+    /// </summary>
+    private static string EscapeArg(string arg)
+    {
+        if (string.IsNullOrEmpty(arg)) return arg;
+        bool needQuote = arg.IndexOfAny(new[] { ' ', '\t', '"' }) >= 0;
+        if (!needQuote) return arg;
+        return "\"" + arg.Replace("\"", "\\\"") + "\"";
     }
 }

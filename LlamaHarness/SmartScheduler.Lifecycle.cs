@@ -125,8 +125,12 @@ public partial class SmartScheduler
         if (string.IsNullOrWhiteSpace(_cfg.ModelPath) || !File.Exists(_cfg.ModelPath))
             throw new InvalidOperationException($"模型文件不存在：{_cfg.ModelPath}");
 
-        // 智能模式下自动探测空闲后端端口，规避 Hyper-V/WSL2 动态端口保留导致的绑定失败
-        int srvPort = AutoMode ? SchedulerUtils.PickFreePort(PreferredBackendPort) : _cfg.Port;
+        // B-02 修复：无论智能/手动模式均先探测端口可用性；手动模式用户配置端口被占用时向上探测 32 个候选，
+        // 避免直接绑定失败；探测结果写入 _backendPort，与 UI 展示保持一致。
+        int preferred = AutoMode ? PreferredBackendPort : _cfg.Port;
+        int srvPort = SchedulerUtils.PickFreePort(preferred);
+        if (!AutoMode && srvPort != _cfg.Port)
+            Log?.Invoke($"注意：配置端口 {_cfg.Port} 已被占用或保留，实际使用后端端口 {srvPort}（自动向上探测）。");
 
         // P 核掩码生效时线程数不得超过掩码绑定的核数，否则超订降速
         int threads = _cfg.Threads;
@@ -305,9 +309,14 @@ public partial class SmartScheduler
     {
         if (CurrentPhase != Phase.Running) return;
         int inflight = Volatile.Read(ref _inflight);
-        var remaining = new DateTime(Interlocked.Read(ref _lastTouchTicks)).Add(TimeSpan.FromMinutes(IdleMinutes)) - DateTime.Now;
+        long lastTouch = Interlocked.Read(ref _lastTouchTicks); // 修复6：快照式读取，避免读两次 _lastTouchTicks 出现撕裂值
+        var remaining = new DateTime(lastTouch).Add(TimeSpan.FromMinutes(IdleMinutes)) - DateTime.Now;
         if (remaining <= TimeSpan.Zero && inflight == 0)
+        {
+            // 修复2：唤醒观察期——把 Touch 引发的取消转为事件唤醒，与下方 1s 定时循环互斥（避免竞争窗口）
+            _graceWakeEvent.Reset();
             SleepNow();
+        }
         else if (inflight > 0)
             // 有在途任务时不触发休眠，明确提示原因（长驻 SSE 流式连接会一直压制休眠）
             RaiseStatus($"运行中 · {inflight} 个在途任务，休眠暂停");
@@ -336,20 +345,27 @@ public partial class SmartScheduler
 
     private async Task SleepNowCoreAsync()
     {
+        // 修复2：ManualResetEventSlim(Touch/Stop 唤醒) + 50ms 分片阻塞等待——观察期只唤醒一次，避免计时器/唤醒事件竞争
         try
         {
-            var touchAtEntry = Interlocked.Read(ref _lastTouchTicks);
             RaiseStatus($"闲置超时，{SleepGraceSeconds} 秒后休眠（期间保存 KV 缓存）…");
-            // 静默观察期：期间任何新请求（Touch 刷新基准点）或在途任务都取消本次休眠
-            for (int i = 0; i < SleepGraceSeconds; i++)
-            {
-                await Task.Delay(StandbyDelayMs).ConfigureAwait(false);
-                if (Volatile.Read(ref _inflight) > 0 || Interlocked.Read(ref _lastTouchTicks) != touchAtEntry)
+            bool woken = false;
+                // 修复2：阻塞 Wait(50) 等待信号；每次 50ms 检查超时/停止/在途，唤醒时延 ≤50ms
                 {
-                    Log?.Invoke("休眠取消：观察期内有新请求或在途任务。");
-                    RaiseStatus("运行中 · 休眠取消（有新活动）");
-                    return;
+                    var deadline = DateTime.UtcNow.Add(TimeSpan.FromSeconds(SleepGraceSeconds));
+                    while (true)
+                    {
+                        if (_graceWakeEvent.Wait(50)) { woken = true; break; }
+                        if (Volatile.Read(ref _inflight) > 0 || _stopRequested) { break; }
+                        if (DateTime.UtcNow >= deadline) break;
+                    }
                 }
+
+            if (woken || _stopRequested || Volatile.Read(ref _inflight) > 0)
+            {
+                Log?.Invoke("休眠取消：观察期内有新请求/在途任务或已请求停止。");
+                RaiseStatus("运行中 · 休眠取消（有新活动）");
+                return;
             }
             lock (_sleepGate)
             {
@@ -369,6 +385,8 @@ public partial class SmartScheduler
         }
         finally
         {
+            // 修复2：清理唤醒事件，为下一次休眠观察期做准备（避免残留 Set 状态导致下次观察期立即退出）
+            _graceWakeEvent.Reset();
             lock (_sleepGate) { _sleepPreparing = false; }
         }
     }
@@ -456,6 +474,8 @@ public partial class SmartScheduler
     /// <summary>停止按钮 / 关闭前：终止进程树。</summary>
     public void StopNow()
     {
+        _stopRequested = true;          // 修复9：置位停止信号，让入口/唤醒/管道拒绝新请求
+        _graceWakeEvent.Set();          // 修复9：唤醒观察期 SleepNowCoreAsync，避免继续走休眠流程
         Log?.Invoke("正在停止 llama-server…");
         SetPhase(Phase.Standby); // 先置位，Exited 回调不再重复报告
         RaiseStatus(AutoMode ? "已停止，监听待机中。" : "已停止。");
@@ -467,9 +487,24 @@ public partial class SmartScheduler
         StopListening();
         SetPhase(Phase.Standby);
         try { _server.Stop(); } catch { }
+        // M-01 修复：唤醒中处置时不等待 _wakeTask（避免阻塞 UI 关闭）；WakeUpAsync 内部有独立超时兜底，
+        // 但此时 _server 已 Stop，唤醒失败会自行清理并回到 Standby。
+        Task? wake = null;
+        lock (_wakeGate) { wake = _wakeTask; _wakeTask = null; }
+        // B-03 修复：解绑事件，避免 _server 生命周期内已 Dispose 但外部（如 Timer 触发）继续回调
+        _server.OutputLine -= OnServerOutput;
+        if (_onServerExitedDelegate != null)
+        {
+            _server.Exited -= _onServerExitedDelegate;
+            _onServerExitedDelegate = null;
+        }
         _tickTimer.Dispose();
-        _backend?.Dispose();
+        // A1 修复：通过 Lazy 访问 Backend 并 Dispose；IsValueCreated 避免触发新 client 创建。
+        if (_backendLazy.IsValueCreated) _backendLazy.Value.Dispose();
         _server.Dispose();
+        // M-01 追加：不阻塞等待 wake，仅记录日志（Dispose 由 UI 线程触发）
+        if (wake != null)
+            Log?.Invoke($"警告：Dispose 时仍有在途唤醒任务（{wake.Status}），已中断唤醒引用。");
     }
 
     private void SetPhase(Phase p)

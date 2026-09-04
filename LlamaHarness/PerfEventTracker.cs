@@ -1,7 +1,11 @@
 namespace LlamaHarness;
 
-/// <summary>性能事件会话聚合（按 Category+Op 归组）。</summary>
-public sealed record PerfEventStats(int Count, double SumMs, double MaxMs)
+/// <summary>
+/// 性能事件会话聚合（按 Category+Op 归组）。
+/// 问题 19 修复：Count 由 int → long。长期运行（7×24 高频事件如 slot_select/wakeup）
+/// int（约 21 亿）存在溢出风险，溢出后 AvgMs 会因负数返回异常值。
+/// </summary>
+public sealed record PerfEventStats(long Count, double SumMs, double MaxMs)
 {
     /// <summary>平均耗时（ms）。</summary>
     public double AvgMs => Count > 0 ? SumMs / Count : 0;

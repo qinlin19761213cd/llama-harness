@@ -105,7 +105,8 @@ public class LogPipelineTests
         Assert.False(w.RotateIfNeeded(100)); // 恰好 100，未超限 → 不轮切
         w.Write("x");                        // 超 1 字节
         Assert.True(w.RotateIfNeeded(100));  // 触发轮切
-        Assert.True(File.Exists(path + ".1"));
+        // 备份名 = 时间戳+序号（t.log.yyyyMMdd-HHmmss[.log]），非固定 .1（C4 修复）
+        Assert.Single(Directory.GetFiles(dir, "t.*.log"));
         w.Write("after-rotate");             // 自动重开新文件
         Assert.True(File.Exists(path));
         w.Dispose();

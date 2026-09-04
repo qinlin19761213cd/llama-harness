@@ -15,6 +15,9 @@ public static class AppPaths
     public static string LogDir => Path.Combine(BaseDir, "logs");
     public static string StaticDir => Path.Combine(BaseDir, "static");
 
+    // B-02 修复：KV Cache 默认目录改为项目下的本地目录（消除硬编码 g:/temp 盘符）
+    public static string KvCacheDir => Path.Combine(BaseDir, "kv_cache");
+
     // —— config/ 下的持久化文件 ——
     public static string ConfigJson => Path.Combine(ConfigDir, "config.json");
     public static string SlotBindingsJson => Path.Combine(ConfigDir, "slot_bindings.json");
@@ -38,6 +41,11 @@ public static class AppPaths
     public static string EnsureDir(string dir)
     {
         if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        // 问题 15 修复：Windows 下对新建目录显式授予当前用户 FullControl 权限。
+        // 动机：跨用户共享盘（多用户共用开发机/项目盘符）创建目录时，父目录的继承 ACL 可能
+        // 导致该用户后续无法读写；显式补一条 FullControl ACE（保留原有 ACE 集合，不覆盖）
+        // 兜底。非 Windows（Linux/macOS 使用 POSIX uid/gid 权限，默认 0755 已足够）跳过。
+        if (OperatingSystem.IsWindows()) TryGrantCurrentUserFullControl(dir, isDirectory: true);
         return dir;
     }
 
@@ -46,6 +54,44 @@ public static class AppPaths
 
     /// <summary>确保 logs/ 目录存在（幂等）。</summary>
     public static void EnsureLogDir() => EnsureDir(LogDir);
+
+    /// <summary>对已存在文件显式授予当前用户 FullControl（问题 15）。失败静默（保留原有权限）。</summary>
+    public static void TryGrantFileFullControl(string filePath)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        if (!File.Exists(filePath)) return;
+        TryGrantCurrentUserFullControl(filePath, isDirectory: false);
+    }
+
+    /// <summary>对文件/目录追加当前用户 FullControl ACE（保留原有 ACE 集合）。非 Windows 或操作失败时静默跳过。</summary>
+    private static void TryGrantCurrentUserFullControl(string path, bool isDirectory)
+    {
+        try
+        {
+            var identity = new System.Security.Principal.NTAccount(System.Security.Principal.WindowsIdentity.GetCurrent().Name);
+            if (isDirectory)
+            {
+                var dir = new System.IO.DirectoryInfo(path);
+                var sec = dir.GetAccessControl();
+                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(identity,
+                    System.Security.AccessControl.FileSystemRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow));
+                sec.SetAccessRuleProtection(false, preserveInheritance: true);
+                dir.SetAccessControl(sec);
+            }
+            else
+            {
+                var file = new System.IO.FileInfo(path);
+                var sec = file.GetAccessControl();
+                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(identity,
+                    System.Security.AccessControl.FileSystemRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow));
+                sec.SetAccessRuleProtection(false, preserveInheritance: true);
+                file.SetAccessControl(sec);
+            }
+        }
+        catch { /* ACL 操作失败静默：权限兜底属增强性质，不阻断主流程 */ }
+    }
 
     /// <summary>llama-server.exe 常见安装位置候选（LlamaFinder 使用；PATH 搜索仍留在 LlamaFinder 逻辑内）。</summary>
     public static IEnumerable<string> BackendExeCandidates()
