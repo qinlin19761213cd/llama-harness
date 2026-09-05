@@ -16,7 +16,7 @@ public partial class SmartScheduler
     /// <summary>网关预处理管道（仅推理请求）：
     /// 思考模式拦截 → 槽位亲和路由 + Tool 链锁定 + KV 驱逐 save / restore 自愈 → TokenGuard 裁剪 → 强制流式改写 → 前缀哈希可观测。
     /// 返回 (改写后 bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root)；返回 null = TokenGuard 拒绝（已向客户端写 400）。</summary>
-    private async Task<(byte[] BodyBytes, string FinalBody, bool EffStreaming, int? RoutedSlot, string? RoutedKey, JsonObject? Root)?> PrepareGatewayAsync(
+    private async Task<(byte[] BodyBytes, string FinalBody, bool EffStreaming, int? RoutedSlot, string? RoutedKey, JsonObject? Root, string? AgentRole)?> PrepareGatewayAsync(
         HttpListenerContext ctx, HttpListenerRequest req, string path, byte[] bodyBytes)
     {
         string p = req.Url?.AbsolutePath ?? "";
@@ -31,6 +31,15 @@ public partial class SmartScheduler
         // 解析失败（非法 JSON）→ root=null → 跳过全部 DOM 改写、原样透传（等价于旧实现各方法 try-catch 透传）。
         JsonObject? root = null;
         try { root = JsonNode.Parse(body)?.AsObject(); } catch { /* 非法 JSON */ }
+
+        // v2.29：子代理身份标记识别与剥离（在所有网关预处理之前，确保标记不进入 TokenGuard 计量和模型上下文）
+        string? agentRole = null;
+        if (root != null)
+        {
+            agentRole = DetectAndStripAgentTag(root);
+            if (agentRole != null)
+                Log?.Invoke($"[AGENT-TAG] 识别到{agentRole}代理请求，已剥离 AGENT_TAG 标记（不污染模型上下文）。");
+        }
 
         int? routedSlot = null;
         string? routedKey = null;
@@ -70,7 +79,7 @@ public partial class SmartScheduler
         bool didKvRestore = false;
         if (aff != null && p.Contains("completion", StringComparison.OrdinalIgnoreCase))
         {
-            (routedSlot, routedKey, didKvRestore) = await ApplySlotAffinityAsync(req, aff, root);
+            (routedSlot, routedKey, didKvRestore) = await ApplySlotAffinityAsync(req, aff, root, agentRole);
         }
 
         // Token Guard（仅 chat/completions）：计量 + 裁剪，防 "exceeds context size" 400
@@ -167,23 +176,34 @@ public partial class SmartScheduler
             bodyBytes = System.Text.Encoding.UTF8.GetBytes(body);
         }
 
-        return (bodyBytes, body, streaming || _cfg.ForceStream, routedSlot, routedKey, root);
+        return (bodyBytes, body, streaming || _cfg.ForceStream, routedSlot, routedKey, root, agentRole);
     }
 
     /// <summary>槽位亲和阶段：指纹绑定（LRU 驱逐 / §4.2 自动强占）→ §4.5 Tool 链锁定 → 驱逐前 KV save → restore 自愈 → n_slots 注入。
     /// E-1：直接操作调用方持有的同一棵 DOM（root=null 时跳过 DOM 步骤，等价旧实现 parse 失败透传）。
     /// 返回（路由槽位、绑定 key、是否执行了 KV restore——restore 后需重跑 TokenGuard 校验）。</summary>
     private async Task<(int? RoutedSlot, string? RoutedKey, bool DidRestore)> ApplySlotAffinityAsync(
-        HttpListenerRequest req, SlotAffinity aff, JsonObject? root)
+        HttpListenerRequest req, SlotAffinity aff, JsonObject? root, string? agentRole)
     {
         // §4.2 自动冻结：应用类型前缀在 AutoPreemptiveApps → 绑定强制强占（暂停 LRU 驱逐）
         var autoPre = ParseAutoPreemptivePrefixes();
-        var (slot, key, isNew, evicted, evictedSlot, evictedKvCache) = aff.GetSlot(req.Headers, autoPre);
+        // v2.30：主从槽位隔离——secondary 请求跳过 PrimarySlotIndex（预留槽位），并使用独立亲和 key 避免复用主代理绑定
+        bool isSecondary = agentRole != null && agentRole.Equals("sub", StringComparison.OrdinalIgnoreCase);
+        int reservedSlot = (isSecondary && _cfg.SlotMode == SlotModeType.DualPrimarySecondary) ? _cfg.PrimarySlotIndex : -1;
+        string? keySuffix = (isSecondary && _cfg.SlotMode == SlotModeType.DualPrimarySecondary) ? "_sub" : null;
+        var (slot, key, isNew, evicted, evictedSlot, evictedKvCache) = aff.GetSlot(req.Headers, autoPre, reservedSlot, keySuffix);
         int? routedSlot = slot;
         string? routedKey = key;
 
         // ① §4.5 Tool 链会话锁定：末条消息 role=tool → 锁槽位防驱逐；循环结束自动解锁
         HandleToolLoopLock(aff, root, key, slot);
+
+        // v2.30：子代理自动关闭强占——secondary 请求强制 preempt=false，任务完成后立即释放槽位
+        if (isSecondary && _cfg.SecondaryAutoDisablePreempt && key != null && aff.IsPreemptive(key))
+        {
+            aff.SetPreemptive(key, false);
+            Log?.Invoke($"[AGENT-TAG] secondary 请求自动关闭强占：{key} → slot{slot}（任务完成后立即释放）");
+        }
 
         var kv = _kvCache;
 
@@ -436,6 +456,72 @@ public partial class SmartScheduler
         }
         return changed;
     }
+
+
+    /// <summary>v2.29：子代理身份标记识别与剥离。
+    /// 扫描 messages：找到 role=user 且 content 以 "AGENT_TAG::" 开头的消息 → 识别身份（SUB/MAIN）→ 剥离标记行（不污染模型上下文）。
+    /// 标记协议（Trae 全局规则注入）：主 agent 调用 Task 时在 query 首行插入 "AGENT_TAG::SUB::<task_id>"，
+    /// 该 query 即子 agent 的第一条 user 消息，因此标记确定性地出现在子 agent 请求体中。
+    /// 返回："sub" / "main" / null（无标记）。</summary>
+    private static string? DetectAndStripAgentTag(JsonObject root)
+    {
+        if (!root.TryGetPropertyValue("messages", out var messagesNode) || messagesNode is not JsonArray messages)
+            return null;
+
+        foreach (var item in messages)
+        {
+            if (item is not JsonObject msg) continue;
+            if (!msg.TryGetPropertyValue("role", out var roleNode)
+                || roleNode is not System.Text.Json.Nodes.JsonValue rv
+                || !rv.TryGetValue<string>(out var role)
+                || !role.Equals("user", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // ① 字符串 content：直接检查首行是否为标记
+            if (msg.TryGetPropertyValue("content", out var contentNode)
+                && contentNode is System.Text.Json.Nodes.JsonValue cv
+                && cv.TryGetValue<string>(out var contentStr))
+            {
+                var m = sAgentTag.Match(contentStr);
+                if (m.Success)
+                {
+                    var agentRole = m.Groups[1].Value.ToLowerInvariant();
+                    // 剥离标记行 + 后面的空行（标记独占一行，规则要求标记后空一行再写内容）
+                    var stripped = sAgentTag.Replace(contentStr, "", 1).TrimStart('\r', '\n');
+                    msg["content"] = stripped;
+                    return agentRole;
+                }
+            }
+            // ② multimodal content 数组：{"type":"text","text":"..."} 逐元素检查
+            else if (msg.TryGetPropertyValue("content", out var contentArr) && contentArr is JsonArray parts)
+            {
+                foreach (var part in parts)
+                {
+                    if (part is not JsonObject pObj) continue;
+                    if (!pObj.TryGetPropertyValue("text", out var textNode)
+                        || textNode is not System.Text.Json.Nodes.JsonValue tv
+                        || !tv.TryGetValue<string>(out var textStr))
+                        continue;
+                    var m = sAgentTag.Match(textStr);
+                    if (m.Success)
+                    {
+                        var agentRole = m.Groups[1].Value.ToLowerInvariant();
+                        var stripped = sAgentTag.Replace(textStr, "", 1).TrimStart('\r', '\n');
+                        pObj["text"] = stripped;
+                        return agentRole;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>v2.29：子代理身份标记正则（编译期常量）。
+    /// 匹配 "AGENT_TAG::SUB" 或 "AGENT_TAG::SUB::<task_id>"，独占一行（允许前后空白）。
+    /// 捕获组 1 = 身份（SUB/MAIN），捕获组 2 = 可选任务 ID。</summary>
+    private static readonly Regex sAgentTag = new(
+        @"^\s*AGENT_TAG::(SUB|MAIN)(::[^\r\n]*)?\s*(\r?\n|$)",
+        RegexOptions.Compiled | RegexOptions.Multiline);
 
     /// <summary>P2 修复项 3：闭合 &lt;thinking&gt;...&lt;/thinking&gt; 标签正则（编译期常量，跨行 + 忽略大小写 + 非贪婪）。</summary>
     private static readonly Regex sThinkClosed = new(

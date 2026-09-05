@@ -93,33 +93,34 @@ public partial class SmartScheduler
         int? routedSlot = null;     // 本次请求亲和路由的槽位号（崩溃恢复快照接续用）
         string? routedKey = null;   // 本次请求亲和路由的绑定 key（KV 快照文件名）
         JsonObject? root = null;    // 解析后的 DOM（400 自愈分支需原地裁剪重发）
+        string? agentRole = null;   // v2.29：子代理身份标记（sub/main/null），由 PrepareGatewayAsync 识别剥离后注入 X-Agent-Role Header
         if (bodyBytes != null && bodyBytes.Length > 0)
         {
             var prepared = await PrepareGatewayAsync(ctx, req, path, bodyBytes);
             if (prepared == null) return; // TokenGuard 拒绝：响应已写出
-            (bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root) = prepared.Value;
+            (bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root, agentRole) = prepared.Value;
         }
 
         // ③ 转发后端 + 响应管道 + 完成清理
-        await SendAndPipeAsync(ctx, uri, path, req, bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root, rtId);
+        await SendAndPipeAsync(ctx, uri, path, req, bodyBytes, finalBody, effStreaming, routedSlot, routedKey, root, agentRole, rtId);
     }
 
     /// <summary>转发阶段：构造后端请求（过滤逐跳头）→ 连接异常 500ms 重试一次 → 400 上下文超限自愈 → 响应管道（崩溃恢复/断点快照清理/客户端断开兜底）。</summary>
     private async Task SendAndPipeAsync(
         HttpListenerContext ctx, Uri uri, string path, HttpListenerRequest req,
-        byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root, string? rtId) // v2.21：性能埋点
+        byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root, string? agentRole, string? rtId) // v2.21：性能埋点
     {
         if (rtId != null) _timing.MarkSent(rtId); // v2.21 打点：网关预处理完成（读体+路由/裁剪/流式改写），即将发向后端
 
         // 连接异常重试需重建请求（HttpRequestMessage 发送后 Content 流即被消费，不能复用同一 msg）——传入工厂，重试时重新构造
-        HttpResponseMessage resp = await TryConnectWithRetryAsync(() => RequestProcessor.BuildBackendRequest(req, uri, bodyBytes));
+        HttpResponseMessage resp = await TryConnectWithRetryAsync(() => RequestProcessor.BuildBackendRequest(req, uri, bodyBytes, agentRole != null ? new Dictionary<string, string> { ["X-Agent-Role"] = agentRole } : null));
         using (resp)
         {
             var outResp = ctx.Response;
 
             // 400 上下文超限自愈（激进裁剪 + KV 废弃 + 重发）；已处理则返回
             // B-04 修复：400 自愈路径也需打点 timing.Complete，避免 rtId 泄漏导致统计偏差
-            if (await TryRecoverContextOverflowAsync(ctx, resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey))
+            if (await TryRecoverContextOverflowAsync(ctx, resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey, agentRole))
             {
                 if (rtId != null) _timing.Complete(rtId, success: false);
                 return;
@@ -193,7 +194,7 @@ public partial class SmartScheduler
     /// 此分支是最后一道防线。返回 true = 已处理（调用方应 return）；false = 未触发自愈（继续正常流程）。</summary>
     private async Task<bool> TryRecoverContextOverflowAsync(
         HttpListenerContext ctx, HttpResponseMessage resp, HttpListenerResponse outResp, HttpListenerRequest req, Uri uri,
-        string path, JsonObject? root, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey)
+        string path, JsonObject? root, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, string? agentRole)
     {
         if (resp.StatusCode != System.Net.HttpStatusCode.BadRequest || !RequestProcessor.IsChatCompletions(path) || root == null || finalBody == null)
             return false;
@@ -237,7 +238,7 @@ public partial class SmartScheduler
                 }
                 // 3. 重新提交请求（用裁剪后的 root 序列化）
                 string newBody = modified ? root.ToJsonString() : finalBody;
-                var newMsg = RequestProcessor.BuildBackendRequest(req, uri, System.Text.Encoding.UTF8.GetBytes(newBody));
+                var newMsg = RequestProcessor.BuildBackendRequest(req, uri, System.Text.Encoding.UTF8.GetBytes(newBody), agentRole != null ? new Dictionary<string, string> { ["X-Agent-Role"] = agentRole } : null);
                 HttpResponseMessage retryResp;
                 try
                 {

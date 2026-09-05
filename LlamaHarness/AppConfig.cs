@@ -7,6 +7,13 @@ namespace LlamaHarness;
 /// ctx=65536 / ngl=999 / parallel=1 / kv-unified 开启（20G 显存内 KV 完整驻留，防 page-fault）。
 /// 持久化为程序目录下的 config.json。
 /// </summary>
+/// <summary>v2.30：槽位模式。Single = 单槽/关闭主从隔离（默认，向后兼容）；DualPrimarySecondary = 主从隔离（primary 独占 slot 0，secondary 用 slot 1+）。</summary>
+public enum SlotModeType
+{
+    Single = 0,
+    DualPrimarySecondary = 1
+}
+
 public class AppConfig
 {
     /// <summary>C-004：配置 schema 版本号；后续格式变更时递增并做迁移兼容（旧文件缺该字段时反序列化取默认值 1）。</summary>
@@ -91,6 +98,18 @@ public class AppConfig
     public List<AffinityRule> AffinityRules { get; set; } = DefaultAffinityRules();
     /// <summary>请求体 dump 开关（应用识别分析用）：每个 POST 的原始 body + headers 落盘 request_dump.log。默认关闭——防 prompt 隐私落盘与无谓 IO（审计 O-18）。</summary>
     public bool RequestDumpEnabled { get; set; } = false;
+
+    /// <summary>v2.30：槽位模式。Single = 关闭主从隔离（默认）；DualPrimarySecondary = 主从隔离（primary 独占 slot 0，secondary 用 slot 1+）。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("slot_mode")]
+    public SlotModeType SlotMode { get; set; } = SlotModeType.Single;
+
+    /// <summary>v2.30：主代理预留槽位索引（默认 0）。DualPrimarySecondary 模式下，该槽位预留给 primary，secondary 禁止占用。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("primary_slot_index")]
+    public int PrimarySlotIndex { get; set; } = 0;
+
+    /// <summary>v2.30：子代理自动关闭强占（默认 true）。DualPrimarySecondary 模式下，secondary 请求自动设置 preempt=false，任务完成后立即释放槽位。</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("secondary_auto_disable_preempt")]
+    public bool SecondaryAutoDisablePreempt { get; set; } = true;
     /// <summary>日志管道队列满丢弃策略：DropNewest = 保留历史、丢新入队（默认——排查更看重最早异常源头）；DropOldest = 丢最旧、保留新消息。</summary>
     public QueueFullPolicy LogQueueFullPolicy { get; set; } = QueueFullPolicy.DropNewest;
 

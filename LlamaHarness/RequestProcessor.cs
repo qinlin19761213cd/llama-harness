@@ -37,7 +37,7 @@ public static class RequestProcessor
     }
 
     /// <summary>构造后端 HttpRequestMessage：body 走内容头，Host/长度/编码等逐跳头由 HttpClient 处理，其余原样复制（个别特殊头复制失败忽略）。</summary>
-    public static HttpRequestMessage BuildBackendRequest(HttpListenerRequest req, Uri uri, byte[]? bodyBytes)
+    public static HttpRequestMessage BuildBackendRequest(HttpListenerRequest req, Uri uri, byte[]? bodyBytes, Dictionary<string, string>? extraHeaders = null)
     {
         var msg = new HttpRequestMessage(new HttpMethod(req.HttpMethod), uri);
         if (bodyBytes != null)
@@ -61,6 +61,15 @@ public static class RequestProcessor
             catch
             {
                 // 个别特殊头无法原样复制，忽略
+            }
+        }
+        // v2.29：注入网关层额外 headers（如 X-Agent-Role 主/子代理身份标识）
+        if (extraHeaders != null)
+        {
+            foreach (var kv in extraHeaders)
+            {
+                try { msg.Headers.TryAddWithoutValidation(kv.Key, kv.Value); }
+                catch { /* 个别特殊头无法添加，忽略 */ }
             }
         }
         return msg;

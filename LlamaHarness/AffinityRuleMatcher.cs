@@ -79,11 +79,17 @@ public static class AffinityRuleMatcher
     /// <summary>按规则派生应用显示名：固定 Key 精确匹配优先，KeyTemplate 前缀匹配其次；未知返回 "未知应用"。</summary>
     public static string AppNameOf(string key, IEnumerable<AffinityRule> rules)
     {
+        // v2.30：子代理 key 以 "_sub" 结尾 → 去掉后缀后匹配主应用规则（trae_global_sub → Trae Work 子代理）
+        string baseKey = key;
+        bool isSub = key.EndsWith("_sub", StringComparison.OrdinalIgnoreCase);
+        if (isSub) baseKey = key.Substring(0, key.Length - 4);
         foreach (var r in rules)
         {
-            // 固定 key 规则：精确匹配（忽略大小写）
-            if (!string.IsNullOrEmpty(r.Key) && string.Equals(key, r.Key, StringComparison.OrdinalIgnoreCase))
-                return r.Name;
+            // 固定 key 规则：精确匹配（忽略大小写）；子代理 key 去掉 _sub 后缀后匹配
+            if (!string.IsNullOrEmpty(r.Key) &&
+                (string.Equals(key, r.Key, StringComparison.OrdinalIgnoreCase) ||
+                 (isSub && string.Equals(baseKey, r.Key, StringComparison.OrdinalIgnoreCase))))
+                return isSub ? r.Name + "（子代理）" : r.Name;
             // 模板规则：key 以 {value} 之前的前缀开头
             if (!string.IsNullOrEmpty(r.KeyTemplate))
             {

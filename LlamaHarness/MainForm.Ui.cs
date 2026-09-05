@@ -72,6 +72,10 @@ public partial class MainForm : Form
     private readonly CheckBox _chkUnknownAutoBind = new() { Text = "未知应用自动识别（独立 KV 快照）", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) }; // v2.23.8 未知应用自动兜底
     private readonly ComboBox _cmbLogQueuePolicy = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, ForeColor = Color.White };
     private readonly TextBox _numBatchThreads = NumBox();
+    // v2.30 主从槽位隔离
+    private readonly ComboBox _cmbSlotMode = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, ForeColor = Color.White };
+    private readonly TextBox _numPrimarySlotIndex = NumBox();
+    private readonly CheckBox _chkSecondaryAutoDisablePreempt = new() { Text = "子代理自动关闭强占", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(200, 200, 200) };
     // §4.2 自动强占（冻结防驱逐）/ 自动快照恢复（不锁槽）：checkbox 由 affinity_rules 动态生成（规则表即来源，新增业务仅配置）
     private CheckBox[] _autoPreChecks = Array.Empty<CheckBox>();
     private CheckBox[] _snapChecks = Array.Empty<CheckBox>();
@@ -149,6 +153,7 @@ public partial class MainForm : Form
             _chkContinuation, _numMaxContinuations, _numContTimeout,
             _chkCrashRecover, _numMaxRestarts,
             _chkUnknownAutoBind,
+            _cmbSlotMode, _numPrimarySlotIndex, _chkSecondaryAutoDisablePreempt,
         };
         _paramControls = _paramControls.Concat(_autoPreChecks).Concat(_snapChecks)
             .Concat(new Control[] { _btnExportCfg, _btnImportCfg }) // 运行中禁止导入/导出，避免改参冲突
@@ -470,7 +475,7 @@ public partial class MainForm : Form
         // 文字框白字（禁用时也保持白字，清晰）+ CheckBox 勾改黑
         foreach (var c in new[] { _txtExe, _txtModel, _txtExtra, _txtPcoreMask, _txtKvCachePath, _txtLoadMode, _txtCacheTypeKv, _txtSpecType })
             if (c is TextBox tb) tb.ForeColor = Color.White;
-        foreach (var c in new[] { _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover, _chkFlashAttn, _chkRequestDump, _chkNoCacheIdleSlots, _chkUnknownAutoBind })
+        foreach (var c in new[] { _chkNoKv, _chkAuto, _chkForceStream, _chkTokenGuard, _chkContinuation, _chkCrashRecover, _chkFlashAttn, _chkRequestDump, _chkNoCacheIdleSlots, _chkUnknownAutoBind, _chkSecondaryAutoDisablePreempt })
             UiTheme.ApplyBlackCheck(c);
         foreach (var c in _autoPreChecks) UiTheme.ApplyBlackCheck(c);
         foreach (var c in _snapChecks) UiTheme.ApplyBlackCheck(c);
@@ -607,6 +612,12 @@ public partial class MainForm : Form
         AddRow(g, "崩溃恢复:", _chkCrashRecover);
         AddRow(g, "最大重启:", _numMaxRestarts);
         AddRow(g, "未知应用:", _chkUnknownAutoBind); // v2.23.8：未匹配规则的应用自动独立 key + KV 快照
+        // v2.30 主从槽位隔离
+        _cmbSlotMode.Items.Add("single（单槽，网关串行化并发）");
+        _cmbSlotMode.Items.Add("dual_primary_secondary（双槽，主代理锁 slot0，子代理走 slot1+）");
+        AddRow(g, "槽位模式:", _cmbSlotMode);
+        AddRow(g, "主槽位索引:", _numPrimarySlotIndex);
+        AddRow(g, "子代理强占:", _chkSecondaryAutoDisablePreempt);
         // 模式行：标签 + CheckBox 同行（AutoSize 让 CheckBox 紧跟标签，不再撑满整行）
         var chkAutoRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, BackColor = Color.Transparent };
         chkAutoRow.Controls.Add(_chkAuto);
@@ -639,6 +650,9 @@ public partial class MainForm : Form
         _tooltip.SetToolTip(_chkRequestDump, "勾选后 dump 所有请求体 + headers 到 logs/request_dump.log（应用识别分析用）；不勾选 = 关闭。");
         _tooltip.SetToolTip(_cmbLogQueuePolicy, "日志管道队列满（50k 行）时的丢弃策略：drop-newest = 保留历史日志、丢新入队（默认，排查更看重最早异常源头）；drop-oldest = 丢最旧、保留新消息。");
         _tooltip.SetToolTip(_numBatchThreads, "batch 阶段 CPU 线程数（--tb）：prefill 分词/调度辅助加速；0 = 不拼接。");
+        _tooltip.SetToolTip(_cmbSlotMode, "v2.30 槽位模式：single = 单槽，所有请求走同一槽位，网关层串行化并发；dual_primary_secondary = 双槽主从隔离，主代理锁定 slot0（强占不被驱逐），子代理走 slot1+（自动关闭强占，任务完成释放）。需 llama-server --parallel >= 2。");
+        _tooltip.SetToolTip(_numPrimarySlotIndex, "主代理预留槽位索引（默认 0）。dual_primary_secondary 模式下，该槽位预留给主代理，子代理分配时跳过。");
+        _tooltip.SetToolTip(_chkSecondaryAutoDisablePreempt, "勾选后，子代理请求自动关闭强占（preemptive=false）：任务完成后立即释放槽位，不占用主代理预留槽位；不勾选 = 子代理也可强占槽位。");
         // —— 新增 11 条（v2.17）——
         _tooltip.SetToolTip(_txtExe, "llama-server 可执行文件路径（含 llama-server.exe）；无效时自动查找或手动浏览。");
         _tooltip.SetToolTip(_txtModel, "GGUF 模型文件路径（.gguf），留空启动前 AutoFindExe 会提示。");

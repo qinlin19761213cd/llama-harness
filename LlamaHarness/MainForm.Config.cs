@@ -29,6 +29,10 @@ public partial class MainForm
         _numSpecDraftNMax.Text = Math.Clamp(cfg.SpecDraftNMax, NUM_DRAFT_MIN, NUM_DRAFT_MAX).ToString();
         _chkRequestDump.Checked = cfg.RequestDumpEnabled;
         _chkUnknownAutoBind.Checked = cfg.UnknownAppAutoBind; // v2.23.8 未知应用自动兜底
+        // v2.30 主从槽位隔离
+        _cmbSlotMode.SelectedIndex = cfg.SlotMode == SlotModeType.DualPrimarySecondary ? 1 : 0;
+        _numPrimarySlotIndex.Text = Math.Clamp(cfg.PrimarySlotIndex, 0, 15).ToString();
+        _chkSecondaryAutoDisablePreempt.Checked = cfg.SecondaryAutoDisablePreempt;
         _cmbLogQueuePolicy.SelectedIndex = cfg.LogQueueFullPolicy == QueueFullPolicy.DropOldest ? 1 : 0;
         _numBatchThreads.Text = Math.Clamp(cfg.BatchThreads, NUM_BTHREADS_MIN, NUM_BTHREADS_MAX).ToString();
         _txtExtra.Text = cfg.ExtraArgs;
@@ -78,6 +82,10 @@ public partial class MainForm
         _config.SpecDraftNMax = ReadInt(_numSpecDraftNMax, NUM_DRAFT_MIN, NUM_DRAFT_MAX, _config.SpecDraftNMax);
         _config.RequestDumpEnabled = _chkRequestDump.Checked;
         _config.UnknownAppAutoBind = _chkUnknownAutoBind.Checked;
+        // v2.30 主从槽位隔离
+        _config.SlotMode = _cmbSlotMode.SelectedIndex == 1 ? SlotModeType.DualPrimarySecondary : SlotModeType.Single;
+        _config.PrimarySlotIndex = ReadInt(_numPrimarySlotIndex, 0, 15, _config.PrimarySlotIndex);
+        _config.SecondaryAutoDisablePreempt = _chkSecondaryAutoDisablePreempt.Checked;
         var logPolicy = _cmbLogQueuePolicy.SelectedIndex == 1 ? QueueFullPolicy.DropOldest : QueueFullPolicy.DropNewest;
         _config.LogQueueFullPolicy = logPolicy;
         LogFile.Configure(logPolicy); // 运行时立即生效

@@ -138,19 +138,22 @@ public sealed class SlotAffinity
     /// <param name="autoPreemptive">自动强占前缀集合（§4.2 主力会话冻结）：key 匹配任一前缀 → 强制 Preemptive=true（暂停 LRU 驱逐）。</param>
     /// <returns>(slot, key, isNewBinding, evictedKey, evictedSlot, evictedKvCache)</returns>
     public (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache) GetSlot(
-        NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null)
+        NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null, int reservedSlot = -1, string? keySuffix = null)
     {
         // v2.22 可观测：槽路由选择耗时（从进入排队到分配完成，含排队等待）
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var r = GetSlotCore(headers, autoPreemptive);
+        var r = GetSlotCore(headers, autoPreemptive, reservedSlot, keySuffix);
         PerfEvents?.Record(new PerfEvent("sched", "slot_select", sw.Elapsed.TotalMilliseconds, r.Key));
         return r;
     }
 
     private (int Slot, string? Key, bool NewBinding, string? Evicted, int EvictedSlot, bool EvictedKvCache) GetSlotCore(
-        NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null)
+        NameValueCollection headers, IReadOnlyList<string>? autoPreemptive = null, int reservedSlot = -1, string? keySuffix = null)
     {
         var key = GetAffinityKey(headers);
+        // v2.30：子代理独立亲和 key——加后缀避免复用主代理绑定，确保 secondary 走 slot 1+
+        if (!string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(keySuffix))
+            key = key + keySuffix;
         if (string.IsNullOrEmpty(key))
             return (NextRoundRobinSlot(), null, false, null, -1, false);
 
@@ -175,7 +178,7 @@ public sealed class SlotAffinity
                 return (b.Slot, key, false, null, -1, false);
             }
 
-            var alloc = TryAllocateLocked(key, autoPre);
+            var alloc = TryAllocateLocked(key, autoPre, reservedSlot);
             if (alloc.Slot != null)
             {
                 NotifyUnknownBindIfNew(key, headers); // v2.23.8 P2：新建 unknown 绑定 → [AUTO-BIND]
@@ -191,7 +194,7 @@ public sealed class SlotAffinity
             Thread.Sleep(PollIntervalMs);
             lock (_gate)
             {
-                var alloc = TryAllocateLocked(key, autoPre);
+                var alloc = TryAllocateLocked(key, autoPre, reservedSlot);
                 if (alloc.Slot != null)
                 {
                     NotifyUnknownBindIfNew(key, headers); // v2.23.8 P2：新建 unknown 绑定 → [AUTO-BIND]
@@ -206,20 +209,20 @@ public sealed class SlotAffinity
 
     /// <summary>锁内原子分配：空闲槽 → LRU 驱逐非强占 → 建绑定 + 持久化。
     /// Slot=null = 全被强占占满（调用方锁外排队）。重复 key 并发时采纳已有绑定（保持旧单锁语义）。</summary>
-    private (int? Slot, string? Evicted, int EvictedSlot, bool EvictedKvCache) TryAllocateLocked(string key, bool autoPre)
+    private (int? Slot, string? Evicted, int EvictedSlot, bool EvictedKvCache) TryAllocateLocked(string key, bool autoPre, int reservedSlot = -1)
     {
         if (_bindings.TryGetValue(key, out var existing))
             return (existing.Slot, null, -1, false); // 重复 key 并发：采纳已有绑定
 
         // 新 Key：优先分配无其他绑定的槽；全占则驱逐最久未活跃的非强占绑定
-        int? slot = FindFreeSlotLocked();
+        int? slot = FindFreeSlotLocked(reservedSlot);
         string? evicted = null;
         int evictedSlot = -1;
         bool evictedKvCache = false;
         if (slot < 0)
         {
-            // 找可驱逐目标（非强占）
-            var lruEntry = _bindings.Where(kv => !kv.Value.Preemptive).OrderBy(kv => kv.Value.LastActive).FirstOrDefault();
+            // 找可驱逐目标（非强占，且不驱逐预留槽位的绑定）
+            var lruEntry = _bindings.Where(kv => !kv.Value.Preemptive && (reservedSlot < 0 || kv.Value.Slot != reservedSlot)).OrderBy(kv => kv.Value.LastActive).FirstOrDefault();
             var lruKey = lruEntry.Value.Equals(default(Binding)) ? null : lruEntry.Key;
             if (!string.IsNullOrEmpty(lruKey))
             {
@@ -404,11 +407,14 @@ public sealed class SlotAffinity
         }
     }
 
-    private int FindFreeSlotLocked()
+    private int FindFreeSlotLocked(int reservedSlot = -1)
     {
         var used = new HashSet<int>(_bindings.Values.Select(b => b.Slot));
         for (int i = 0; i < _slotCount; i++)
+        {
+            if (reservedSlot >= 0 && i == reservedSlot) continue; // v2.30：跳过预留槽位（primary 独占）
             if (!used.Contains(i)) return i;
+        }
         return -1; // 全占
     }
 
