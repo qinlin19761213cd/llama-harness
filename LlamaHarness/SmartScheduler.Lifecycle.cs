@@ -48,6 +48,7 @@ public partial class SmartScheduler
     private async Task WakeUpAsync()
     {
         _nonStreamWarned = 0; // 新会话：非流式告警重新计数
+        _stopRequested = false; // 修复：StopNow() 置位的停止信号必须在唤醒时清除，否则重启后所有请求被 Http 入口 if(_stopRequested) 直接 503 拦截（后端实际已就绪但网关假死）
         StatsReset?.Invoke();   // C-007：进入 Waking 即重置统计（llama-server task ID 从 0 重计），不再依赖 UI 调用
         SetPhase(Phase.Waking);
         RaiseStatus("唤醒中…（正在加载模型）");
