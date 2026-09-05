@@ -85,38 +85,54 @@ public sealed class LlamaServerClient : IBackendClient
     // ── ②' tokenize 计数（TokenGuard 计量）──────────────────
     public async Task<int?> TokenizeAsync(string text, CancellationToken ct)
     {
-        string[] endpoints = { "/tokenize", "/v1/tokenize" }; // b10676+ 主路径 /tokenize 优先（消除每请求一次 404 噪音）；/v1/tokenize 仅兼容旧版 llama.cpp 兜底
+        string[] endpoints = { "/tokenize", "/v1/tokenize" }; // b10676+ 主路径 /tokenize 优先；/v1/tokenize 仅兼容旧版兜底
         for (int i = 0; i < endpoints.Length; i++)
         {
-            try
+            // v2.26.11：网络异常重试 1 次（slot 释放瞬间后端短暂不可用，"An error occurred while sending the request"）
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                var payload = new JsonObject { ["content"] = text };
-                using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(payload.ToJsonString()));
-                content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-                using var resp = await _http.PostAsync(new Uri(_baseUrl + endpoints[i]), content, ct);
-                if (!resp.IsSuccessStatusCode)
+                try
                 {
-                    Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} → HTTP {(int)resp.StatusCode}，尝试下一路径");
-                    continue;
+                    var payload = new JsonObject { ["content"] = text };
+                    using var httpContent = new ByteArrayContent(Encoding.UTF8.GetBytes(payload.ToJsonString()));
+                    httpContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                    using var resp = await _http.PostAsync(new Uri(_baseUrl + endpoints[i]), httpContent, ct);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} -> HTTP {(int)resp.StatusCode}，尝试下一路径");
+                        break; // HTTP 错误码不重试
+                    }
+                    var body = await resp.Content.ReadAsStringAsync(ct);
+                    using var doc = JsonDocument.Parse(body);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("tokens", out var toks) && toks.ValueKind == JsonValueKind.Array)
+                        return toks.GetArrayLength();
+                    if (root.TryGetProperty("n_tokens", out var n) && n.TryGetInt32(out var v))
+                        return v;
+                    Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 响应缺少 tokens/n_tokens 字段，尝试下一路径");
+                    break; // 响应格式错误不重试
                 }
-                var body = await resp.Content.ReadAsStringAsync(ct);
-                using var doc = JsonDocument.Parse(body);
-                var root = doc.RootElement;
-                if (root.TryGetProperty("tokens", out var toks) && toks.ValueKind == JsonValueKind.Array)
-                    return toks.GetArrayLength();
-                if (root.TryGetProperty("n_tokens", out var n) && n.TryGetInt32(out var v))
-                    return v;
-                Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 响应缺少 tokens/n_tokens 字段，尝试下一路径");
-            }
-            catch (Exception ex)
-            {
-                Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 异常：{ex.Message}，尝试下一路径");
+                catch (HttpRequestException ex)
+                {
+                    if (attempt == 0)
+                    {
+                        Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 网络异常（第1次）：{ex.Message}，50ms 后重试");
+                        try { await Task.Delay(50, ct); } catch (OperationCanceledException) { return null; }
+                        continue; // 重试当前 endpoint
+                    }
+                    Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 网络异常（第2次，重试仍失败）：{ex.Message}，尝试下一路径");
+                }
+                catch (Exception ex)
+                {
+                    Log?.Invoke($"[TOKEN-GUARD-WARN] tokenize {endpoints[i]} 异常：{ex.Message}，尝试下一路径");
+                    break; // 非网络异常不重试
+                }
             }
         }
         return null; // 全部路径失败：降级
     }
 
-    // ── ③ KV 槽位 ──────────────────────────────────────────
+// ── ③ KV 槽位 ──────────────────────────────────────────
     public Task<HttpResponseMessage> SlotSaveAsync(int slot, string filename, CancellationToken ct)
         => SlotActionAsync(slot, "save", filename, ct);
 
