@@ -109,25 +109,20 @@ public sealed class SlotPanelView : UserControl
             $"{b.App ?? b.Key}: 槽位: {b.Slot} · 强占: {(b.Preemptive ? "是" : "否")} · KV缓存: {(b.KvCache ? "开" : "关")}")));
     }
 
-    /// <summary>填充槽位管理表格（强占/KV缓存 CheckBox 可编辑）；行 Key = 亲和 Key，Dictionary 索引避免 O(n²) 扫 Tag。</summary>
+    /// <summary>填充槽位管理表格（强占/KV缓存 CheckBox 可编辑）；每次刷新全量重建——
+    /// [P1-M11] 先清空 DataGridViewRows + _slotMgmtRowIdx，防止槽位解绑后陈旧行残留导致 GDI 句柄缓慢累积 + idx 映射失效。</summary>
     private void RefreshSlotMgmtGrid()
     {
         var bindings = _scheduler.GetSlotBindings();
-        if (bindings == null)
-        {
-            _gridSlotMgmt.Rows.Clear();
-            _slotMgmtRowIdx.Clear();
-            return;
-        }
+        // 先全量清理——槽位解绑后旧 row 和 dict 条目会残留，每刷新加几行，长期运行 GDI 句柄持续累积
+        _gridSlotMgmt.Rows.Clear();
+        _slotMgmtRowIdx.Clear();
+        if (bindings == null) return;
         foreach (var (key, app, slot, lastActive, preemptive, kvCache) in bindings)
         {
-            int idx;
-            if (!_slotMgmtRowIdx.TryGetValue(key, out idx))
-            {
-                idx = _gridSlotMgmt.Rows.Add();
-                _gridSlotMgmt.Rows[idx].Tag = key;
-                _slotMgmtRowIdx[key] = idx;
-            }
+            int idx = _gridSlotMgmt.Rows.Add();
+            _gridSlotMgmt.Rows[idx].Tag = key;
+            _slotMgmtRowIdx[key] = idx;
             var row = _gridSlotMgmt.Rows[idx];
             row.Cells[0].Value = key;
             row.Cells[1].Value = app;

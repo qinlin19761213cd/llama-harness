@@ -69,7 +69,7 @@ public sealed class LlamaServerClient : IBackendClient
         linkedCts.CancelAfter(TimeSpan.FromSeconds(timeout));
 
         var sendTask = _http.SendAsync(request, option, linkedCts.Token);
-        var delayTask = Task.Delay(TimeSpan.FromSeconds(timeout), CancellationToken.None);
+        var delayTask = Task.Delay(TimeSpan.FromSeconds(timeout), linkedCts.Token);
         var completed = await Task.WhenAny(sendTask, delayTask);
         if (completed == sendTask)
             return await sendTask;
@@ -198,10 +198,8 @@ public sealed class LlamaServerClient : IBackendClient
             var body = await resp.Content.ReadAsStringAsync(ct);
             return string.IsNullOrWhiteSpace(body) ? null : JsonDocument.Parse(body);
         }
-        catch
-        {
-            return null; // 后端不可用 / 解析失败：判空降级
-        }
+        catch (OperationCanceledException) { throw; } // [P1-M17] OCE 穿透，调用方的取消意图不应被吞
+        catch { return null; }
     }
 
     // B5：共享 HttpClient 不由本实例释放（由 Lazy 持有直到进程退出）；仅测试注入的 handler 分支才需要 Dispose。

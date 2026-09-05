@@ -148,7 +148,7 @@ public static class LlamaFinder
         if (!string.IsNullOrWhiteSpace(cfg.SpecType))
         {
             args.Add("--spec-type");
-            args.Add(cfg.SpecType.Trim());
+            args.Add(EscapeArg(cfg.SpecType.Trim())); // [P1-M16] 补 EscapeArg
             if (cfg.SpecDraftNMax > 0)
             {
                 args.Add("--spec-draft-n-max");

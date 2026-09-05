@@ -22,6 +22,10 @@ public sealed class RestoreStats
     /// <summary>前缀漂移告警阈值：某 key 存在快照（savedN>0）却连续 N 次全量 prefill → 判定前缀漂移（系统提示词/tools 组装不稳定或 TokenGuard 裁剪变化，KV 增量复用失效）。v2.23.10。</summary>
     public const int DriftChainThreshold = 3;
 
+    /// <summary>[P1-M13] _pending 队列容量上限（默认 256）——后端长时间不输出 prompt eval 时，RecordRequest 持续入队；
+    /// 超限后丢弃最旧条目（Dequeue），保证判定正确性优先。</summary>
+    public const int MaxPendingQueueCapacity = 256;
+
     private readonly object _gate = new();
     private readonly string _statsPath;
     private readonly Queue<Pending> _pending = new();
@@ -134,6 +138,9 @@ public sealed class RestoreStats
         lock (_gate)
         {
             if (savedN > _maxSavedN) _maxSavedN = savedN;
+            // [P1-M13] 容量保护：队列超限时丢弃最旧条目，防止长期运行内存缓慢累积
+            while (_pending.Count >= MaxPendingQueueCapacity)
+                _pending.Dequeue();
             _pending.Enqueue(new Pending { Key = key, Slot = slot, WrapperHit = wrapperHit, SavedN = savedN, EnqueuedAt = DateTime.Now });
         }
     }

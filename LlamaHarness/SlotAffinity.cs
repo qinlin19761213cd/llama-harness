@@ -163,6 +163,10 @@ public sealed class SlotAffinity
         // ── 阶段 1（锁内）：已有绑定刷新 / 空闲槽 / LRU 驱逐判定 ──
         lock (_gate)
         {
+            // [P1-M14] 每次 GetSlot 顺带跑一次 PruneStaleBindings——解决"启动跑一次之后运行时 stale 绑定持续累积"问题。
+            // _bindings.Count 通常 < 100，遍历 O(n) 可接受；只在发现过期绑定时才原子写盘。
+            PruneStaleBindings();
+
             if (_bindings.TryGetValue(key, out var b))
             {
                 // 已有绑定刷新：autoPre 想设强占，但若当前非强占且 cap 已满 → 不设（防"启动裁剪→下次请求又变回强占"死循环）

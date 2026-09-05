@@ -14,6 +14,11 @@ public sealed class SystemMetrics
     private const double BytesPerGb = 1073741824.0;
     private const int ExitProbeTimeoutMs = 5000;
     private const int NvidiaProbeTimeoutMs = 3000;
+
+    // ── CPU 采样状态（lock 保护四字段一致性） ──
+    private readonly object _cpuGate = new();
+    private ulong _prevIdle, _prevKernel, _prevUser;
+    private bool _hasSample;
     private static class Native
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -40,28 +45,29 @@ public sealed class SystemMetrics
         public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX pbs);
     }
 
-    private ulong _prevIdle, _prevKernel, _prevUser;
-    private bool _hasSample;
-
     /// <summary>nvidia-smi 路径（Lazy：首次使用解析一次，之后全项目共享；找不到为 null 恒定）。</summary>
     private static readonly Lazy<string?> NvSmiPath = new(ResolveNvidiaSmi);
 
-    /// <summary>整机 CPU 占用百分比（基于上次调用的差值）。</summary>
+    /// <summary>整机 CPU 占用百分比（基于上次调用的差值）。
+    /// [P0 修复] 四字段读写全部加 lock (_cpuGate)，防止多线程并发采样时半更新状态导致 CPU 百分比失真。</summary>
     public double GetCpuPercent()
     {
         if (!Native.GetSystemTimes(out var idle, out var kernel, out var user)) return 0;
         ulong i = ToU64(idle), k = ToU64(kernel), u = ToU64(user);
         double pct = 0;
-        if (_hasSample)
+        lock (_cpuGate)
         {
-            ulong idleDelta = i - _prevIdle;
-            ulong kernelDelta = k - _prevKernel; // kernel 时间包含 idle
-            ulong userDelta = u - _prevUser;
-            ulong busy = (kernelDelta > idleDelta ? kernelDelta - idleDelta : 0) + userDelta;
-            ulong total = busy + idleDelta;
-            pct = total > 0 ? 100.0 * busy / total : 0;
+            if (_hasSample)
+            {
+                ulong idleDelta = i - _prevIdle;
+                ulong kernelDelta = k - _prevKernel; // kernel 时间包含 idle
+                ulong userDelta = u - _prevUser;
+                ulong busy = (kernelDelta > idleDelta ? kernelDelta - idleDelta : 0) + userDelta;
+                ulong total = busy + idleDelta;
+                pct = total > 0 ? 100.0 * busy / total : 0;
+            }
+            _prevIdle = i; _prevKernel = k; _prevUser = u; _hasSample = true;
         }
-        _prevIdle = i; _prevKernel = k; _prevUser = u; _hasSample = true;
         return pct;
     }
 

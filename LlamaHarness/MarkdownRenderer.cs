@@ -12,7 +12,12 @@ public static class MarkdownRenderer
     private static readonly Font _codeFont = new("Consolas", 9F);
     private static readonly Font _italicFont = new("Microsoft YaHei UI", 9F, FontStyle.Italic);
 
-    /// <summary>将 Markdown 文档渲染到 RichTextBox（支持标题/代码块/列表/粗体/行内代码）。</summary>
+    // [P2-L27] Regex 缓存：原每次 StripMdInline 重建 3 个 Regex（UI 热路径），改为 static 预编译
+    private static readonly System.Text.RegularExpressions.Regex _bold = new(@"\*\*(.+?)\*\*", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex _code = new(@"`(.+?)`", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex _link = new(@"\[(.+?)\]\(.*?\)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>将 Markdown 文档渲染到 RichTextBoxRichTextBox（支持标题/代码块/列表/粗体/行内代码）。</summary>
     public static void RenderToRichTextBox(RichTextBox rtb, string md)
     {
         rtb.Clear();
@@ -123,9 +128,10 @@ public static class MarkdownRenderer
     /// <summary>去除行内 Markdown 标记（**粗体** / `code` / [text](url)）。</summary>
     public static string StripMdInline(string text)
     {
-        var s = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*(.+?)\*\*", "$1");
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"`(.+?)`", "$1");
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"\[(.+?)\]\(.*?\)", "$1");
+        // [P2-L27] 用缓存的 static Regex，避免每次调用重建
+        var s = _bold.Replace(text, "$1");
+        s = _code.Replace(s, "$1");
+        s = _link.Replace(s, "$1");
         return s;
     }
 }

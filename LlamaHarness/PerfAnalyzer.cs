@@ -111,6 +111,15 @@ public static class PerfAnalyzer
     /// <summary>同 metric 相邻告警的最小间隔（秒），避免刷屏。</summary>
     private const int AlarmCooldownSeconds = 60;
 
+    /// <summary>显式严重度排名（None=0 / Warn=1 / Crit=2）——避免 PerfAlarmLevel 枚举 int 值调整导致比较逻辑静默失效。</summary>
+    private static int SeverityRank(PerfAlarmLevel? level) => level switch
+    {
+        null => 0,
+        PerfAlarmLevel.Warn => 1,
+        PerfAlarmLevel.Crit => 2,
+        _ => 0,
+    };
+
     /// <summary>分发事件（不抛异常）：订阅方异常隔离，避免影响告警主路径。</summary>
     private static void RaiseAlarm(EventHandler<PerfAlarmEventArgs>? evt, PerfAlarmEventArgs args)
     {
@@ -137,7 +146,8 @@ public static class PerfAnalyzer
             _curLevel[metric] = newLevel;
 
             // 状态迁移事件（Raise：新级别 > 前一级别 或 从无到 Warn/Crit）
-            if (prev == null || prev < newLevel)
+            // [P2-L24] 用 SeverityRank 显式比较，避免依赖枚举 int 排序
+            if (prev == null || SeverityRank(newLevel) > SeverityRank(prev))
                 RaiseAlarm(AlarmRaised, new PerfAlarmEventArgs(metric, newLevel, value, threshold, ts, prev));
         }
     }
@@ -166,21 +176,46 @@ public static class PerfAnalyzer
     }
 
     /// <summary>从采样点取指定指标值（未知键返回 null，调用方跳过）。
+    /// 完整兼容三层命名：① MetricKeys 权威注册表键 ② MetricKeys 兼容别名 ③ 历史短名。
     /// D2 修复：为兼容旧命名，每个指标同时支持短名与长名两种键（长短名返回同一值）。</summary>
     public static double? ValueOf(PerfPoint p, string metric) => metric switch
     {
+        // ── 系统资源（⑥ MetricKeys 系统资源采样指标） ──
         "cpu" or "cpu_percent" => p.CpuPercent,
-        "vram_mb" or "vram_used_mb" => p.VramUsedMb,
-        "vram_total_mb" => p.VramTotalMb,
-        "mem_gb" => p.MemUsedGb,
-        "pp_tps" or "prompt_tokens_per_second" => p.PpTps,
-        "tg_tps" or "tokens_per_second" => p.TgTps,
+        "vram" or "vram_mb" or "vram_used_mb" => p.VramUsedMb,            // MetricKeys.Vram = "vram"
+        "vram_total" or "vram_total_mb" => p.VramTotalMb,                  // MetricKeys.VramTotal = "vram_total"
+        "mem" or "mem_gb" => p.MemUsedGb,                                  // MetricKeys.Mem = "mem"
+        "mem_total" or "mem_total_gb" => p.MemTotalGb,                     // MetricKeys.MemTotal = "mem_total"
+        // ── llama-server 推理（③ MetricKeys 推理指标） ──
+        "prompt_eval_tps" or "pp_tps" or "prompt_tokens_per_second" => p.PpTps,  // MetricKeys.PromptEvalTps
+        "gen_tps" or "tg_tps" or "tokens_per_second" => p.TgTps,                  // MetricKeys.GenTps
+        // ── KV 缓存（① MetricKeys 会话级 KV 累积指标） ──
+        "kv_hit_delta" => p.KvHitDelta,              // MetricKeys.KvHitDelta
+        "kv_false_miss" => p.KvFalseMiss,            // MetricKeys.KvFalseMiss
+        "saved_n" => p.SavedN,                       // MetricKeys.SavedN
+        "kv_full_prefill" => p.KvFullPrefill,        // MetricKeys.KvFullPrefill
+        "kv_reuse_tokens" => p.KvReuseTokens,        // MetricKeys.KvReuseTokens
+        "kv_reuse_saved_ms" => p.KvReuseSavedMs,     // MetricKeys.KvReuseSavedMs
+        // ── 调度器（② MetricKeys 调度器累积指标） ──
+        "evict_count" => p.EvictCount,               // MetricKeys.EvictCount
+        "preempt_trigger" => p.PreemptTrigger,        // MetricKeys.PreemptTrigger
+        // ── 日志管道（④ MetricKeys 日志管道指标） ──
+        "log_dropped_lines" => p.LogDroppedLines,    // MetricKeys.LogDroppedLines
+        "log_flush_cost_ms" => p.LogFlushCostMs,     // MetricKeys.LogFlushCostMs
+        // ── 请求级速记键（MetricKeys.Inflight = "req_inflight"） ──
+        "req_inflight" or "inflight" => p.Inflight,
+        // ── 其他速记键（历史遗留） ──
         "tok" => p.TokensCached,
         "ctx" => p.CtxUsedPct,
         "slots" => p.SlotsProcessing,
-        "inflight" => p.Inflight,
         _ => null,
     };
+
+    /// <summary>判断给定 metric 是否属于吞吐类指标（prompt_eval_tps / gen_tps / 旧键 pp_tps / tg_tps），
+    /// 用于空闲态负载门控——空闲 0 吞吐非异常，应跳过不连续累加。</summary>
+    private static bool IsThroughputMetric(string metric) =>
+        metric == "tg_tps" || metric == "gen_tps" || metric == "tokens_per_second" ||
+        metric == "pp_tps" || metric == "prompt_eval_tps" || metric == "prompt_tokens_per_second";
 
     /// <summary>
     /// 周期采样点连续窗口阈值检测：对每个规则独立扫描（时间升序），
@@ -199,7 +234,7 @@ public static class PerfAnalyzer
             {
                 // 吞吐类规则负载门控：无在途请求且无处理槽的空闲点跳过（不累加不重置）——
                 // 空闲 0 吞吐非异常，避免每 5 分钟误报；负载期连续低吞吐仍触发
-                if ((rule.Metric == "tg_tps" || rule.Metric == "pp_tps") && IsIdlePoint(pt)) continue;
+                if (IsThroughputMetric(rule.Metric) && IsIdlePoint(pt)) continue;
                 var v = ValueOf(pt, rule.Metric);
                 if (v == null) { runWarn = 0; runCrit = 0; continue; }
                 bool overCrit = IsOver(v.Value, rule);
@@ -581,13 +616,25 @@ public double KvReuseMs;
     {
         string name = metric switch
         {
-            "cpu" => "CPU 占用",
-            "vram_mb" => "显存占用",
-            "mem_gb" => "内存占用",
-            "tg_tps" => "生成吞吐",
-            "pp_tps" => "处理吞吐",
+            "cpu" or "cpu_percent" => "CPU 占用",
+            "vram" or "vram_mb" or "vram_used_mb" => "显存占用",
+            "vram_total" or "vram_total_mb" => "显存总量",
+            "mem" or "mem_gb" => "内存占用",
+            "mem_total" or "mem_total_gb" => "物理内存总量",
+            "gen_tps" or "tg_tps" or "tokens_per_second" => "生成吞吐",
+            "prompt_eval_tps" or "pp_tps" or "prompt_tokens_per_second" => "处理吞吐",
             "ctx" => "KV 上下文占用",
             "total_ms" => "请求总时延",
+            "req_inflight" or "inflight" => "在途请求数",
+            "slots" => "处理中槽位",
+            "log_dropped_lines" => "日志丢弃累计",
+            "log_flush_cost_ms" => "日志 flush 耗时",
+            "kv_hit_delta" => "KV 命中增量",
+            "kv_false_miss" => "KV 非预期 miss",
+            "saved_n" => "最大 token 偏移",
+            "kv_full_prefill" => "全量 prefill 累计",
+            "evict_count" => "驱逐累计次数",
+            "preempt_trigger" => "强占触发累计",
             _ => metric,
         };
         double threshold = level == PerfAlarmLevel.Warn ? rule.WarnValue : rule.CritValue;

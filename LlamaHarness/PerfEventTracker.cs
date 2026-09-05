@@ -35,7 +35,7 @@ public sealed class PerfEventTracker
     /// <summary>投递一个已完成的事件（调用方已计时）。</summary>
     public void Record(PerfEvent e)
     {
-        var ev = e.Ts == default ? e with { Ts = DateTime.Now } : e;
+        var ev = e.Ts == default ? e with { Ts = MonotonicClock.Now() } : e; // [P2-L25] 用 MonotonicClock.Now() 替代 DateTime.Now，防时钟回拨
         lock (_gate)
         {
             _recent.Add(ev);

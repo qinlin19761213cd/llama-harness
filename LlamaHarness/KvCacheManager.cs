@@ -349,18 +349,29 @@ public sealed class KvCacheManager
     /// </summary>
     public async Task<int> ClearAllAsync()
     {
-        // AH-10：等待在途 save 结束（最长 ~5s），再执行删除
+        // AH-10 + [P1-M15]：等待在途 save 结束（最长 ~5s），再执行删除
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        for (int i = 0; i < 50; i++)
+        try
         {
-            Task[] inflight;
-            lock (_gate)
+            for (int i = 0; i < 50; i++)
             {
-                if (_inflightSaves.Count == 0) break;
-                inflight = _inflightSaves.Values.ToArray();
+                Task[] inflight;
+                lock (_gate)
+                {
+                    if (_inflightSaves.Count == 0) break;
+                    inflight = _inflightSaves.Values.ToArray();
+                }
+                // [P1-M15] 改用 WhenAny + Delay(ct) 实现真正的超时——WhenAll 本身不接受 CancellationToken，
+                // 如果 inflight 中有任务不响应取消，原代码的 IsCancellationRequested 检查被 WhenAll 阻塞住
+                var allDone = Task.WhenAll(inflight);
+                var completed = await Task.WhenAny(allDone, Task.Delay(-1, cts.Token));
+                if (completed != allDone) break; // 5s 超时：跳出循环，继续删文件
+                try { await allDone; } catch { /* save 失败不影响清空 */ }
             }
-            try { await Task.WhenAll(inflight); } catch { /* save 失败不影响清空 */ }
-            if (cts.Token.IsCancellationRequested) break; // 超时保护：最多等 5s
+        }
+        finally
+        {
+            cts.Dispose();
         }
 
         int deleted = 0;

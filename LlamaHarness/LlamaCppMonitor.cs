@@ -108,9 +108,11 @@ public class LlamaCppMonitorCollector
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(ProbeTimeoutSeconds));
 
         // P0-H-05 修复：每个请求独立 CTS + 链接父 token，避免共享 CTS 导致连带取消
-        var slotsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
-        var propsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
-        var metricsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+        // [P0-H3 修复] 三个 CTS 用 using，保证 CaptureSnapshotAsync 完成后 CancellationTokenSource 及时 Dispose，
+        // 释放内核 ManualResetEvent 句柄和对父 timeoutCts.Token 的回调注册，防止高频调用时句柄缓慢堆积。
+        using var slotsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+        using var propsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+        using var metricsCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
 
         // 三个接口并行请求（各自独立容错，GetRawText 保留原始 JSON 文本）
         var slotsTask = _backend.GetSlotsAsync(slotsCts.Token);

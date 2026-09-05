@@ -34,7 +34,11 @@ public static class PerfLog
             AppPaths.EnsureLogDir();
             var path = AppPaths.PerfLog;
             _bytes = File.Exists(path) ? new FileInfo(path).Length : 0;
-            if (_bytes >= MaxFileBytes) RotateLocked();
+            if (_bytes >= MaxFileBytes)
+            {
+                RotateLocked(); // RotateLocked 内部已 _writer = OpenWriter(basePath)
+                return;         // [P1-M5] 不再覆盖，避免叠加 OpenWriter 句柄延迟释放
+            }
             _writer = OpenWriter(path);
         }
     }

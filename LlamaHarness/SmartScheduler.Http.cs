@@ -235,8 +235,10 @@ public partial class SmartScheduler
     }
 
     /// <summary>P2 修复项 6：/health 端点——返回 status + uptime + phase，供外部监控探活。
-    /// 返回 true 表示已处理（上层应 return）。</summary>
-    private bool HandleHealth(HttpListenerContext ctx)
+    /// 返回 true 表示已处理（上层应 return）。
+    /// [P1-M7] 改 async Task<bool> 零代价——消除 .GetAwaiter().GetResult() 同步阻塞反模式；当前在线程池安全，
+    /// 但如果未来有 UI 线程调用会立即死锁。</summary>
+    private async Task<bool> HandleHealthAsync(HttpListenerContext ctx)
     {
         var path = ctx.Request.Url?.AbsolutePath ?? "";
         if (!string.Equals(path, "/health", StringComparison.OrdinalIgnoreCase)) return false;
@@ -252,7 +254,7 @@ public partial class SmartScheduler
             inflight = Volatile.Read(ref _inflight),
             backend_port = _backendPort,
         });
-        RequestProcessor.WriteJsonAsync(ctx, 200, json).GetAwaiter().GetResult();
+        await RequestProcessor.WriteJsonAsync(ctx, 200, json);
         return true;
     }
 
@@ -282,7 +284,7 @@ public partial class SmartScheduler
         EnsureCors(ctx.Response);
 
         // P2 修复项 6：/health 端点快速路径（不触发唤醒、不刷新闲置计时、不走转发管道）
-        if (HandleHealth(ctx)) return;
+        if (await HandleHealthAsync(ctx)) return;
 
         // 本地状态探测端点：不触发唤醒、不刷新闲置计时
         var reqPath = req.Url?.AbsolutePath;
@@ -379,10 +381,14 @@ public partial class SmartScheduler
             }
 
             // 把"唤醒 + 转发 + 打点"打包成单一下游任务，便于看门狗用 Task.WhenAny 监视其完成时机。
+            // [P1-M8] Task.Run 传 CancellationToken，确保 handlerCts 到期时闭包能被底层取消——
+            // HttpClient.SendAsync 接受 CancellationToken，后端立即取消；闭包入口/唤醒后加 ThrowIfCancellationRequested 守卫
             var handlerTask = Task.Run(async () =>
             {
+                handlerCts.Token.ThrowIfCancellationRequested(); // 入口检查（防止排队时已超时）
                 // 首请求排队等待唤醒完成（共享同一唤醒任务，防多进程冲突）
                 await EnsureRunningAsync();
+                handlerCts.Token.ThrowIfCancellationRequested(); // 唤醒后再检查一次（唤醒本身可能耗时）
                 if (rtId != null) _timing.MarkReady(rtId); // 打点：唤醒/排队完成（后端就绪）
                 // 只有真实推理请求才刷新闲置计时；探测类请求不算使用
                 if (isInference)
@@ -393,7 +399,7 @@ public partial class SmartScheduler
                 await ForwardAsync(ctx, rtId);       // 代理转发到后端 llama-server（流式直通）
                 if (rtId != null) _timing.Complete(rtId, success: true); // 打点：成功完成
                 if (isInference) Touch();            // 请求完成：再次刷新倒计时
-            });
+            }, handlerCts.Token);
 
             // 看门狗：handlerTask 正常完成 vs handlerCts 到期
             // 用 Task.Delay(Infinite, token) 挂起直到 handlerCts 触发取消，再 WhenAny 比较两个任务完成顺序。

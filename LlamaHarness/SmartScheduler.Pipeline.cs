@@ -108,26 +108,36 @@ public partial class SmartScheduler
     /// <summary>转发阶段：构造后端请求（过滤逐跳头）→ 连接异常 500ms 重试一次 → 400 上下文超限自愈 → 响应管道（崩溃恢复/断点快照清理/客户端断开兜底）。</summary>
     private async Task SendAndPipeAsync(
         HttpListenerContext ctx, Uri uri, string path, HttpListenerRequest req,
-        byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root, string? agentRole, string? rtId) // v2.21：性能埋点
+        byte[]? bodyBytes, string? finalBody, bool effStreaming, int? routedSlot, string? routedKey, JsonObject? root, string? agentRole, string? rtId)
     {
         if (rtId != null) _timing.MarkSent(rtId); // v2.21 打点：网关预处理完成（读体+路由/裁剪/流式改写），即将发向后端
 
-        // 连接异常重试需重建请求（HttpRequestMessage 发送后 Content 流即被消费，不能复用同一 msg）——传入工厂，重试时重新构造
-        HttpResponseMessage resp = await TryConnectWithRetryAsync(() => RequestProcessor.BuildBackendRequest(req, uri, bodyBytes, agentRole != null ? new Dictionary<string, string> { ["X-Agent-Role"] = agentRole } : null));
-        using (resp)
+        // O1/M1：把 Close 上收到 SendAndPipeAsync 级别——TryRecover return true、PumpResponseAsync 正常结束、任何异常
+        // 所有路径都会 Close HttpListenerResponse，消除 M1 两条失败路径跳过 PumpResponseAsync finally Close 导致的连接泄漏
+        try
         {
-            var outResp = ctx.Response;
-
-            // 400 上下文超限自愈（激进裁剪 + KV 废弃 + 重发）；已处理则返回
-            // B-04 修复：400 自愈路径也需打点 timing.Complete，避免 rtId 泄漏导致统计偏差
-            if (await TryRecoverContextOverflowAsync(ctx, resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey, agentRole))
+            HttpResponseMessage resp = await TryConnectWithRetryAsync(() => RequestProcessor.BuildBackendRequest(req, uri, bodyBytes, agentRole != null ? new Dictionary<string, string> { ["X-Agent-Role"] = agentRole } : null));
+            using (resp)
             {
-                if (rtId != null) _timing.Complete(rtId, success: false);
-                return;
-            }
+                var outResp = ctx.Response;
 
-            // 响应管道 + 崩溃恢复 + 断点快照清理 + 存档（含客户端断开兜底）
-            await PumpResponseAsync(resp, outResp, uri, path, finalBody, effStreaming, routedSlot, routedKey);
+                // 400 上下文超限自愈（激进裁剪 + KV 废弃 + 重发）；已处理则返回
+                // B-04 修复：400 自愈路径也需打点 timing.Complete，避免 rtId 泄漏导致统计偏差
+                if (await TryRecoverContextOverflowAsync(ctx, resp, outResp, req, uri, path, root, finalBody, effStreaming, routedSlot, routedKey, agentRole))
+                {
+                    if (rtId != null) _timing.Complete(rtId, success: false);
+                    return;
+                }
+
+                // 响应管道 + 崩溃恢复 + 断点快照清理 + 存档（含客户端断开兜底）
+                await PumpResponseAsync(resp, outResp, uri, path, finalBody, effStreaming, routedSlot, routedKey);
+            }
+        }
+        finally
+        {
+            // [P1-M1] 统一 Close HttpListenerResponse——兜底：即使 TryRecover 两条失败路径 return true 跳过 PumpResponseAsync，
+            // 或任何异常（连接层/PipeResponseAsync 客户端断开等）也能正确释放底层 HttpListener 连接
+            try { ctx.Response.Close(); } catch { }
         }
     }
 

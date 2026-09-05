@@ -196,6 +196,7 @@ public partial class MainForm : Form
         PerfLog.Stop(); // 关闭性能日志写入器（Flush 后释放文件）
         _scheduler.Dispose();
         LogFile.Shutdown(); // E-6：Flush + 关闭常驻日志写入器（防缓冲丢失）
+        _tooltip?.Dispose(); // [P1-M6] Component 需显式 Dispose，否则 ToolTip 内部 GDI/句柄依赖 GC finalizer
     }
 
     // ==================== 日志 / 跨线程 / 命令（供 Presenter 与区域 Controller 调用） ====================

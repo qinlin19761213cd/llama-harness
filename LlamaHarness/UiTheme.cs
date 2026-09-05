@@ -124,7 +124,7 @@ public static class UiTheme
 
 /// <summary>
 /// 支持禁用态自定义文字颜色的扁平按钮（v2.20）：原生 Button 在 Enabled=false 时用系统灰色绘制文字，
-/// 深色背景下偏黑看不清。本类在禁用态自绘——文字用 DisabledForeColor（浅灰），图标灰化，底色保持 C_Btn，
+/// 深色背景下偏黑看不清。本类在禁用态自绘——文字用 DisabledForeColor（浅灰），图标灰化，底色保持 C_Btn,
 /// 与启用态白色文字明显区分；启用态完全交给 base 绘制（保持原有 Flat 样式与 hover 反馈）。
 /// </summary>
 public sealed class FlatButton : Button
@@ -159,6 +159,7 @@ public sealed class FlatButton : Button
     }
 }
 
+    /// <summary>左侧分组标题（small bold，黑底容器——Control Panel / Configuration / User Manual；宽度与按键一致，由侧边栏网格中列控制）。[P2-L26] 修复注释悬挂：从 FlatButton 类声明前移至此。</summary>
     public static Label MakeSectionTitle(string text) => new()
     {
         Text = $"  {text}",
