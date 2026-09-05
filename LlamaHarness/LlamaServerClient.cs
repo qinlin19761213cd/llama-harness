@@ -31,14 +31,18 @@ public sealed class LlamaServerClient : IBackendClient
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly string _baseUrl;
+    /// <summary>v2.28：首字节超时（秒），可配置。默认 120s（原硬编码 60s）——长任务并发排队时 60s 太短，易触发不必要的断开重连。</summary>
+    private readonly int _firstByteTimeoutSeconds;
     /// <summary>M-11：诊断日志回调（tokenize 降级路径等）。由调用方注入以避免 Console.WriteLine 污染。</summary>
     public Action<string>? Log { get; set; }
 
     /// <param name="baseUrl">后端基地址，如 http://localhost:8081（尾斜杠自动去除）。</param>
     /// <param name="handler">测试注入用 HttpMessageHandler（Mock）；null 时用共享的 SocketsHttpHandler 连接池。</param>
-    public LlamaServerClient(string baseUrl, HttpMessageHandler? handler = null)
+    /// <param name="firstByteTimeoutSeconds">首字节超时（秒），默认 120s。长任务并发排队时可调大。</param>
+    public LlamaServerClient(string baseUrl, HttpMessageHandler? handler = null, int firstByteTimeoutSeconds = 120)
     {
         _baseUrl = baseUrl.TrimEnd('/');
+        _firstByteTimeoutSeconds = firstByteTimeoutSeconds;
         if (handler != null)
         {
             // 测试路径：独立 HttpClient，便于每次 Mock 隔离；Dispose 时释放
@@ -60,18 +64,18 @@ public sealed class LlamaServerClient : IBackendClient
     /// 超时后取消 linkedCts（sendTask 抛 OperationCanceled），向调用方抛 TimeoutException 走统一 503。</summary>
     public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpCompletionOption option, CancellationToken ct)
     {
-        const int firstByteTimeoutSeconds = 60;
+        int timeout = _firstByteTimeoutSeconds;
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linkedCts.CancelAfter(TimeSpan.FromSeconds(firstByteTimeoutSeconds));
+        linkedCts.CancelAfter(TimeSpan.FromSeconds(timeout));
 
         var sendTask = _http.SendAsync(request, option, linkedCts.Token);
-        var delayTask = Task.Delay(TimeSpan.FromSeconds(firstByteTimeoutSeconds), CancellationToken.None);
+        var delayTask = Task.Delay(TimeSpan.FromSeconds(timeout), CancellationToken.None);
         var completed = await Task.WhenAny(sendTask, delayTask);
         if (completed == sendTask)
             return await sendTask;
         // 首字节超时：等待 sendTask 收敛（CancelAfter 触发后应抛 OperationCanceledException），吞掉异常后向调用方抛 TimeoutException
         try { await sendTask; } catch { /* 忽略取消异常 */ }
-        throw new TimeoutException($"后端服务首字节超时（{firstByteTimeoutSeconds}s），请检查 llama-server 状态。");
+        throw new TimeoutException($"后端服务首字节超时（{timeout}s），请检查 llama-server 状态。");
     }
 
     // ── ② 非流式 chat/completions（计量/预热）───────────────

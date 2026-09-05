@@ -130,11 +130,41 @@ public partial class SmartScheduler
         }
     }
 
-    /// <summary>连接异常 500ms 重试一次：后端刚重启/连接被重置时稍等重发（SendAndPipeAsync 子流程①）。
+    /// <summary>v2.28：首字节超时指数退避重试 + 连接异常 500ms 重试（SendAndPipeAsync 子流程①）。
+    /// 外层：首字节超时（TimeoutException）指数退避重试 3 轮（10s→20s→40s）——长任务并发排队时首字节超时丢弃请求，
+    /// 若丢弃主 agent 会导致整个任务失败。超时后 HTTP 连接已断开，重试安全（重建请求）。
+    /// 内层：连接异常（HttpRequestException/IOException/SocketException）500ms 重试一次（原有逻辑）。
     /// 注意：HttpRequestMessage 发送后其 Content 流即被消费，重试必须经工厂重建请求（复用 bodyBytes 字节，
-    /// 字节流可重复读取）——直接复用同一 msg 会抛 InvalidOperationException "The request message was already sent..."
-    /// （实测连接异常重试路径曾因此二次失败）。</summary>
+    /// 字节流可重复读取）——直接复用同一 msg 会抛 InvalidOperationException "The request message was already sent..."。</summary>
     private async Task<HttpResponseMessage> TryConnectWithRetryAsync(Func<HttpRequestMessage> build)
+    {
+        // v2.28：首字节超时指数退避重试——最多 4 次尝试（1 次初始 + 3 次重试）
+        int[] backoffMs = { 10_000, 20_000, 40_000 };
+        for (int attempt = 0; attempt <= backoffMs.Length; attempt++)
+        {
+            try
+            {
+                // 内层：连接异常 500ms 重试一次（原有逻辑，提取为 TryConnectOnceAsync）
+                return await TryConnectOnceAsync(build);
+            }
+            catch (TimeoutException ex)
+            {
+                if (attempt < backoffMs.Length)
+                {
+                    Log?.Invoke($"转发首字节超时（第{attempt + 1}轮），{backoffMs[attempt] / 1000}s 后重试…");
+                    await Task.Delay(backoffMs[attempt]);
+                    continue;
+                }
+                Log?.Invoke($"转发首字节超时（{backoffMs.Length + 1}轮全部失败）：{ex.Message}");
+                throw;
+            }
+        }
+        // 理论不可达
+        throw new TimeoutException("转发首字节超时，全部重试失败。");
+    }
+
+    /// <summary>v2.28：单次连接尝试（含连接异常 500ms 重试一次）。从 TryConnectWithRetryAsync 拆出，供外层首字节超时重试循环调用。</summary>
+    private async Task<HttpResponseMessage> TryConnectOnceAsync(Func<HttpRequestMessage> build)
     {
         HttpResponseMessage resp;
         try
@@ -147,7 +177,7 @@ public partial class SmartScheduler
         {
             // 连接层瞬时失败（后端刚重启 / 连接被重置 / 连接不存在）：稍等后重试一次（重建请求，Content 字节流可重读）。
             // v2.23.6：catch 范围从 HttpRequestException 扩到 IOException/SocketException——实测某些连接失败
-            // （如 WSAENOTCONN "企图在不存在的网络连接上进行操作"）被 HttpClient 直抛而非包装成 HttpRequestException，
+            // （如 WSAENOTCONN "企图在不存在的网络连接上操作"）被 HttpClient 直抛而非包装成 HttpRequestException，
             // 之前因此漏掉重试机会直接失败。
             Log?.Invoke("转发连接异常，正在重试…");
             await Task.Delay(ReconnectDelayMs);
