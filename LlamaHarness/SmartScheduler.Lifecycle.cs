@@ -21,23 +21,54 @@ public partial class SmartScheduler
     private const int SaveAllTimeoutSeconds = 60;
     /// <summary>AH-18：唤醒等待超时（秒）。正常唤醒 1-3 分钟（模型加载 + warming 60s 兜底），3 分钟足够宽不误杀。</summary>
     private const int WakeWaitTimeoutSeconds = 180;
-    /// <summary>确保后端服务运行；未运行时排队等待唤醒任务。AH-18：等待加超时（后端就绪环节卡死时客户端不再无限挂起，超时由调用方回 503/弹窗）。</summary>
+    /// <summary>v2.27：唤醒等待超时指数退避重试间隔（毫秒）。超时后不立即 503，检查 _wakeTask 状态后重试：仍在运行→继续等，已失败→重置重唤醒。最多 3 轮。</summary>
+    private static readonly int[] WakeRetryBackoffMs = { 2000, 4000, 8000 };
+    /// <summary>确保后端服务运行；未运行时排队等待唤醒任务。AH-18：等待加超时（后端就绪环节卡死时客户端不再无限挂起，超时由调用方回 503/弹窗）。
+    /// v2.27：超时后指数退避重试 3 轮，避免一刀切 503——服务唤醒本身需几秒（模型加载+显存分配），期间请求失败是"预期内的临时不可用"，重试可消化假错误。</summary>
     private async Task EnsureRunningAsync()
     {
         if (_server.IsRunning) return;
-        Task t;
-        lock (_wakeGate)
+        // v2.27：指数退避重试——最多 4 次尝试（1 次初始 + 3 次重试）
+        for (int attempt = 0; attempt <= WakeRetryBackoffMs.Length; attempt++)
         {
-            t = _wakeTask ??= WakeUpAsync();
-        }
-        // P0-H-01 修复：使用 try-catch 捕获 TimeoutException，避免调用方误认为唤醒已完成导致请求无限排队
-        try
-        {
-            await t.WaitAsync(TimeSpan.FromSeconds(WakeWaitTimeoutSeconds));
-        }
-        catch (TimeoutException)
-        {
-            throw new TimeoutException($"唤醒等待超时（{WakeWaitTimeoutSeconds}s），llama-server 未就绪。");
+            Task t;
+            bool needReset = false;
+            lock (_wakeGate)
+            {
+                // 已完成的失败/取消任务：重置以便重新唤醒（避免拿到已死的任务永远 WaitAsync 超时）
+                if (_wakeTask != null && _wakeTask.IsCompleted &&
+                    (_wakeTask.Exception != null || _wakeTask.IsCanceled))
+                {
+                    _wakeTask = null;
+                    needReset = true;
+                }
+                t = _wakeTask ??= WakeUpAsync();
+            }
+            // 重置后重新唤醒：先等退避间隔（避免立即重试加剧资源竞争）
+            if (needReset && attempt > 0)
+            {
+                Log?.Invoke($"唤醒任务已失败/取消，{WakeRetryBackoffMs[attempt - 1] / 1000}s 后重新唤醒…");
+                await Task.Delay(WakeRetryBackoffMs[attempt - 1]);
+            }
+            try
+            {
+                await t.WaitAsync(TimeSpan.FromSeconds(WakeWaitTimeoutSeconds));
+                return; // 唤醒成功
+            }
+            catch (TimeoutException)
+            {
+                if (attempt < WakeRetryBackoffMs.Length)
+                {
+                    bool stillRunning = !t.IsCompleted;
+                    Log?.Invoke($"唤醒等待超时（第{attempt + 1}轮，{WakeWaitTimeoutSeconds}s），" +
+                        (stillRunning ? "任务仍在运行，继续等待" : "任务已结束，重置后重试") +
+                        $"…");
+                    // 任务仍在运行：不需要退避，立即继续等（WaitAsync 超时只是取消了等待，任务本身还在跑）
+                    // 任务已结束（失败/取消）：下一轮循环会重置 _wakeTask 并退避
+                    continue;
+                }
+                throw new TimeoutException($"唤醒等待超时（{WakeWaitTimeoutSeconds}s × {WakeRetryBackoffMs.Length + 1}轮），llama-server 未就绪。");
+            }
         }
     }
 
