@@ -496,6 +496,7 @@ public partial class SmartScheduler
         SetPhase(Phase.Standby); // 先置位，Exited 回调不再重复报告
         RaiseStatus(AutoMode ? "已停止，监听待机中。" : "已停止。");
         _server.Stop();
+        _stopRequested = false; // 修复：停止完成后重置停止信号——停止过程中防竞态，停止完成后允许新推理请求自动唤醒（与自动休眠行为一致）；否则 _stopRequested=true 会在 Http 入口拦截所有请求，走不到 WakeUpAsync 重置，形成死锁（手动停止后发请求持续 503）
     }
 
     public void Dispose()
