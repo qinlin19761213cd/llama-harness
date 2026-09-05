@@ -386,7 +386,13 @@ public partial class SmartScheduler
             Interlocked.Increment(ref _sleepCount); // C-102：休眠计数
             Log?.Invoke($"{IdleMinutes} 分钟无请求，自动休眠（累计 #{Volatile.Read(ref _sleepCount)}，inflight 峰值 {Volatile.Read(ref _inflightPeak)}），正在释放显存…");
             RaiseStatus("闲置超时，正在释放显存…");
-            _server.Stop(); // Exited 事件将把状态拉回 Standby
+            _server.Stop();
+            // 修复：不依赖 Exited 异步事件（LlamaServerProcess.Stop() 内 Kill 后立即 Dispose + _proc=null，
+            // Process 对象销毁后 Exited 事件可能丢失，导致 Phase 永远停在 Sleeping、网关持续 502 SERVICE_SLEEPING）
+            SetPhase(Phase.Standby);
+            Log?.Invoke("休眠完成，llama-server 已终止，显存已释放，回到监听待机。");
+            RaiseStatus(AutoMode ? "已休眠，监听待机中（首个推理请求自动唤醒）。" : "已休眠。");
+            _ = VerifyVramReleasedAsync();
         }
         catch (Exception ex)
         {
